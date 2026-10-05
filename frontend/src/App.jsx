@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   AreaChart,
   Area,
@@ -13,10 +13,14 @@ import {
   Cell,
   Legend,
 } from 'recharts';
-import { checkApiHealth } from './api';
+import { checkApiHealth, authService } from './api';
+import ProtectedRoute from './components/ProtectedRoute';
+import BudgetLimitModal from './components/BudgetLimitModal';
+import Login from './pages/Login';
+import Register from './pages/Register';
 import './App.css';
 
-// Initial sample data for realistic student expense tracking
+// Initial sample transactions
 const INITIAL_EXPENSES = [
   { id: 1, title: 'Campus Bookstore (Textbooks)', category: 'Academic', amount: 145.00, date: '2026-10-01', method: 'Debit Card' },
   { id: 2, title: 'Trader Joe’s Groceries', category: 'Food & Dining', amount: 62.40, date: '2026-10-02', method: 'Apple Pay' },
@@ -44,8 +48,9 @@ const CATEGORY_COLORS = {
 };
 
 // Navigation Bar
-function Navigation({ apiStatus }) {
+function Navigation({ apiStatus, userProfile, onLogout }) {
   const location = useLocation();
+  const isAuth = authService.isAuthenticated();
 
   return (
     <header className="navbar">
@@ -53,32 +58,64 @@ function Navigation({ apiStatus }) {
         <div className="brand-icon">₹</div>
         <div>
           <h1 className="brand-title">Student Expense Tracker</h1>
-          <p className="brand-subtitle">Smart Campus Budget & Analytics</p>
+          <p className="brand-subtitle">Campus Budget & Spending Analytics</p>
         </div>
       </div>
 
-      <nav className="nav-links">
-        <Link to="/" className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} id="nav-dashboard">
-          Dashboard
-        </Link>
-        <Link to="/expenses" className={`nav-item ${location.pathname === '/expenses' ? 'active' : ''}`} id="nav-expenses">
-          Expenses
-        </Link>
-        <Link to="/analytics" className={`nav-item ${location.pathname === '/analytics' ? 'active' : ''}`} id="nav-analytics">
-          Analytics
-        </Link>
-      </nav>
+      {isAuth && (
+        <nav className="nav-links">
+          <Link to="/" className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} id="nav-dashboard">
+            Dashboard
+          </Link>
+          <Link to="/expenses" className={`nav-item ${location.pathname === '/expenses' ? 'active' : ''}`} id="nav-expenses">
+            Expenses
+          </Link>
+          <Link to="/analytics" className={`nav-item ${location.pathname === '/analytics' ? 'active' : ''}`} id="nav-analytics">
+            Analytics
+          </Link>
+        </nav>
+      )}
 
-      <div className={`api-badge ${apiStatus.connected ? 'badge-connected' : 'badge-disconnected'}`} id="api-status-badge">
-        <span className="pulse-dot"></span>
-        <span>{apiStatus.connected ? 'Django API Connected' : 'Django API Offline'}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+        <div className={`api-badge ${apiStatus.connected ? 'badge-connected' : 'badge-disconnected'}`} id="api-status-badge">
+          <span className="pulse-dot"></span>
+          <span>{apiStatus.connected ? 'API Online' : 'API Offline'}</span>
+        </div>
+
+        {isAuth ? (
+          <div className="user-menu">
+            <div className="user-pill" title={`Roll No: ${userProfile?.college_roll_number || 'N/A'}`}>
+              <div className="user-avatar-mini">
+                {(userProfile?.username || 'S')[0].toUpperCase()}
+              </div>
+              <span>{userProfile?.username || 'Student'}</span>
+              {userProfile?.college_roll_number && (
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                  ({userProfile.college_roll_number})
+                </span>
+              )}
+            </div>
+            <button type="button" onClick={onLogout} className="btn-logout" id="btn-logout" title="Sign out">
+              Logout
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Link to="/login" className="btn-secondary" style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
+              Login
+            </Link>
+            <Link to="/register" className="btn-primary" style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
+              Register
+            </Link>
+          </div>
+        )}
       </div>
     </header>
   );
 }
 
-// Dashboard Page View
-function Dashboard({ expenses, onAddExpense }) {
+// Dashboard View
+function Dashboard({ expenses, onAddExpense, userProfile, onOpenBudgetModal }) {
   const [formData, setFormData] = useState({
     title: '',
     category: 'Food & Dining',
@@ -88,11 +125,11 @@ function Dashboard({ expenses, onAddExpense }) {
   });
 
   const totalSpent = expenses.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
-  const monthlyAllowance = 800.00;
+  const monthlyAllowance = parseFloat(userProfile?.monthly_budget_limit || 800.00);
   const remainingBudget = Math.max(0, monthlyAllowance - totalSpent);
+  const percentUsed = monthlyAllowance > 0 ? ((totalSpent / monthlyAllowance) * 100).toFixed(1) : 0;
   const avgDaily = (totalSpent / (new Date().getDate() || 1)).toFixed(2);
 
-  // Category breakdown calculation for Recharts Pie
   const categoryMap = {};
   expenses.forEach((item) => {
     categoryMap[item.category] = (categoryMap[item.category] || 0) + parseFloat(item.amount);
@@ -123,10 +160,25 @@ function Dashboard({ expenses, onAddExpense }) {
     <div className="dashboard-view">
       <div className="page-header">
         <div>
-          <h2 className="page-title">Overview Dashboard</h2>
-          <p className="page-description">Welcome back! Track your semester spending and stay within your target budget.</p>
+          <h2 className="page-title">
+            Hello, {userProfile?.username || 'Student'}! 👋
+          </h2>
+          <p className="page-description">
+            Roll Number: <strong style={{ color: '#fff' }}>{userProfile?.college_roll_number || 'Pending'}</strong> • 
+            {userProfile?.monthly_income ? ` Monthly Income: $${parseFloat(userProfile.monthly_income).toFixed(2)} • ` : ' '}
+            Track your semester expenditures and budget targets.
+          </p>
         </div>
         <div className="header-actions">
+          <button
+            type="button"
+            onClick={onOpenBudgetModal}
+            className="btn-secondary"
+            id="btn-edit-budget"
+            title="Adjust monthly budget cap"
+          >
+            ⚙️ Edit Budget Limit (${monthlyAllowance.toFixed(2)})
+          </button>
           <a href="#quick-add" className="btn-primary" id="btn-quick-add">
             + Log Expense
           </a>
@@ -137,14 +189,14 @@ function Dashboard({ expenses, onAddExpense }) {
       <section className="metrics-grid">
         <div className="metric-card glass-panel glass-panel-hover">
           <div className="metric-header">
-            <span>MONTHLY ALLOWANCE</span>
+            <span>MONTHLY BUDGET LIMIT</span>
             <div className="metric-icon-wrap" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
               💳
             </div>
           </div>
           <div className="metric-value">${monthlyAllowance.toFixed(2)}</div>
           <div className="metric-footer" style={{ color: 'var(--text-secondary)' }}>
-            Target semester budget
+            Target semester spending cap
           </div>
         </div>
 
@@ -156,8 +208,8 @@ function Dashboard({ expenses, onAddExpense }) {
             </div>
           </div>
           <div className="metric-value">${totalSpent.toFixed(2)}</div>
-          <div className="metric-footer" style={{ color: '#f87171' }}>
-            {((totalSpent / monthlyAllowance) * 100).toFixed(1)}% of allowance used
+          <div className="metric-footer" style={{ color: percentUsed > 90 ? 'var(--danger)' : '#f87171' }}>
+            {percentUsed}% of monthly limit consumed
           </div>
         </div>
 
@@ -170,7 +222,7 @@ function Dashboard({ expenses, onAddExpense }) {
           </div>
           <div className="metric-value">${remainingBudget.toFixed(2)}</div>
           <div className="metric-footer" style={{ color: '#34d399' }}>
-            Safe for remaining 26 days
+            Available for remaining days
           </div>
         </div>
 
@@ -183,7 +235,7 @@ function Dashboard({ expenses, onAddExpense }) {
           </div>
           <div className="metric-value">${avgDaily}</div>
           <div className="metric-footer" style={{ color: 'var(--text-secondary)' }}>
-            Per day this month
+            Current daily burn rate
           </div>
         </div>
       </section>
@@ -317,7 +369,7 @@ function Dashboard({ expenses, onAddExpense }) {
                 id="expense-title"
                 className="form-input"
                 type="text"
-                placeholder="e.g., Campus Lunch, Library Fine"
+                placeholder="e.g., Campus Lunch, Textbook Xerox"
                 value={formData.title}
                 onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                 required
@@ -436,8 +488,10 @@ function ExpensesView({ expenses }) {
 }
 
 // Analytics View
-function AnalyticsView({ expenses }) {
+function AnalyticsView({ expenses, userProfile }) {
   const total = expenses.reduce((sum, i) => sum + parseFloat(i.amount), 0);
+  const limit = parseFloat(userProfile?.monthly_budget_limit || 800.00);
+
   return (
     <div className="analytics-view">
       <div className="page-header">
@@ -449,7 +503,7 @@ function AnalyticsView({ expenses }) {
       <div className="glass-panel" style={{ padding: '2rem' }}>
         <h3 style={{ marginBottom: '1rem', color: '#fff' }}>Spending Summary</h3>
         <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-          Total logged across {expenses.length} transactions is <strong>${total.toFixed(2)}</strong>.
+          Total logged across {expenses.length} transactions is <strong>${total.toFixed(2)}</strong> against your monthly budget cap of <strong>${limit.toFixed(2)}</strong>.
         </p>
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
           <div className="glass-panel" style={{ padding: '1.5rem', flex: 1, minWidth: '220px' }}>
@@ -461,8 +515,10 @@ function AnalyticsView({ expenses }) {
             <p style={{ fontSize: '1.25rem', fontWeight: 700, color: '#34d399' }}>Food & Dining</p>
           </div>
           <div className="glass-panel" style={{ padding: '1.5rem', flex: 1, minWidth: '220px' }}>
-            <h4 style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>SAVINGS STATUS</h4>
-            <p style={{ fontSize: '1.25rem', fontWeight: 700, color: '#22d3ee' }}>On Track</p>
+            <h4 style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>BUDGET HEALTH</h4>
+            <p style={{ fontSize: '1.25rem', fontWeight: 700, color: total <= limit ? '#34d399' : '#ef4444' }}>
+              {total <= limit ? 'Under Budget' : 'Exceeded Limit'}
+            </p>
           </div>
         </div>
       </div>
@@ -470,10 +526,13 @@ function AnalyticsView({ expenses }) {
   );
 }
 
-// Main Application
+// Main App Component
 export default function App() {
   const [expenses, setExpenses] = useState(INITIAL_EXPENSES);
   const [apiStatus, setApiStatus] = useState({ connected: false, checking: true });
+  const [userProfile, setUserProfile] = useState(() => authService.getStoredProfile());
+  const [isBudgetModalOpen, setIsBudgetModalOpen] = useState(false);
+  const [isOnboarding, setIsOnboarding] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -482,10 +541,45 @@ export default function App() {
         setApiStatus({ connected: res.success, checking: false });
       }
     });
+
+    if (authService.isAuthenticated()) {
+      authService.getProfile().then((profile) => {
+        if (isMounted && profile) {
+          setUserProfile(profile);
+          // Trigger onboarding modal if budget limit is 0 or unconfigured
+          if (!profile.is_onboarded || parseFloat(profile.monthly_budget_limit || 0) <= 0) {
+            setIsOnboarding(true);
+            setIsBudgetModalOpen(true);
+          }
+        }
+      }).catch(() => {
+        // Handled by 401 interceptor
+      });
+    }
+
     return () => {
       isMounted = false;
     };
   }, []);
+
+  const handleAuthSuccess = (profile) => {
+    setUserProfile(profile);
+    if (!profile.is_onboarded || parseFloat(profile.monthly_budget_limit || 0) <= 0) {
+      setIsOnboarding(true);
+      setIsBudgetModalOpen(true);
+    }
+  };
+
+  const handleLogout = () => {
+    authService.logout();
+    setUserProfile(null);
+    window.location.href = '/login';
+  };
+
+  const handleBudgetUpdated = (updatedProfile) => {
+    setUserProfile(updatedProfile);
+    setIsOnboarding(false);
+  };
 
   const handleAddExpense = (newExpense) => {
     setExpenses([newExpense, ...expenses]);
@@ -494,16 +588,70 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="app-container">
-        <Navigation apiStatus={apiStatus} />
+        <Navigation
+          apiStatus={apiStatus}
+          userProfile={userProfile}
+          onLogout={handleLogout}
+        />
+
         <main className="main-content">
           <Routes>
-            <Route path="/" element={<Dashboard expenses={expenses} onAddExpense={handleAddExpense} />} />
-            <Route path="/expenses" element={<ExpensesView expenses={expenses} />} />
-            <Route path="/analytics" element={<AnalyticsView expenses={expenses} />} />
+            <Route
+              path="/login"
+              element={<Login onAuthSuccess={handleAuthSuccess} />}
+            />
+            <Route
+              path="/register"
+              element={<Register onAuthSuccess={handleAuthSuccess} />}
+            />
+
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Dashboard
+                    expenses={expenses}
+                    onAddExpense={handleAddExpense}
+                    userProfile={userProfile}
+                    onOpenBudgetModal={() => {
+                      setIsOnboarding(false);
+                      setIsBudgetModalOpen(true);
+                    }}
+                  />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/expenses"
+              element={
+                <ProtectedRoute>
+                  <ExpensesView expenses={expenses} />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/analytics"
+              element={
+                <ProtectedRoute>
+                  <AnalyticsView expenses={expenses} userProfile={userProfile} />
+                </ProtectedRoute>
+              }
+            />
           </Routes>
         </main>
+
+        <BudgetLimitModal
+          isOpen={isBudgetModalOpen}
+          isOnboarding={isOnboarding}
+          currentBudget={userProfile?.monthly_budget_limit || '0.00'}
+          onClose={() => setIsBudgetModalOpen(false)}
+          onBudgetUpdated={handleBudgetUpdated}
+        />
+
         <footer className="footer">
-          <p>© 2026 Student Expense Tracker • Full-Stack Django & React Scaffold</p>
+          <p>© 2026 Student Expense Tracker • Campus Edition</p>
         </footer>
       </div>
     </BrowserRouter>
