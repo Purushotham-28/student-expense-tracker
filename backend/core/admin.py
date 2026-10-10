@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import UserProfile, Statement, Transaction, PayeeMapping
+from .models import UserProfile, Statement, Transaction, PayeeMapping, Goal
 
 
 class UserProfileInline(admin.StackedInline):
@@ -86,4 +86,16 @@ class PayeeMappingAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "payee_key")
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-updated_at",)
+
+
+@admin.register(Goal)
+class GoalAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "user", "name", "target_amount", "saved_so_far",
+        "deadline", "status", "created_at",
+    )
+    list_filter = ("status", "deadline", "created_at")
+    search_fields = ("user__username", "name")
+    readonly_fields = ("created_at", "updated_at")
+    ordering = ("deadline", "-created_at")
 

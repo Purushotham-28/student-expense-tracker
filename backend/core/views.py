@@ -506,3 +506,149 @@ def whatif_view(request):
         current_balance=current_balance,
     )
     return Response(data, status=status.HTTP_200_OK)
+
+
+# ── Phase 6 — Goal Planner & Adaptive Savings ──────────────────────────────
+
+from .models import Goal  # noqa: E402
+from .serializers import GoalSerializer  # noqa: E402
+from .services.goal_service import (  # noqa: E402
+    calculate_goal_metrics,
+    contribute_to_goal,
+    check_goal_progress_and_suggest_cut,
+)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def goals_view(request):
+    """
+    GET /api/goals/?status=active|done|all
+      Lists user's goals with calculated weekly targets, plus background progress check.
+    POST /api/goals/
+      Creates a new savings goal.
+      Payload: { "name": "Laptop", "target_amount": 60000, "deadline": "2026-12-31", "saved_so_far": 0 }
+    """
+    if request.method == 'GET':
+        status_filter = request.query_params.get('status', 'all').lower()
+        qs = Goal.objects.filter(user=request.user)
+        if status_filter in ['active', 'done']:
+            qs = qs.filter(status=status_filter)
+
+        goals_data = GoalSerializer(qs, many=True).data
+
+        # Background check of actual savings rate vs required rate
+        evaluation = check_goal_progress_and_suggest_cut(request.user)
+
+        total_target = sum(float(g.target_amount) for g in qs)
+        total_saved = sum(float(g.saved_so_far) for g in qs)
+        active_weekly_target = sum(g.weekly_target for g in qs if g.status == Goal.Status.ACTIVE)
+
+        return Response({
+            'goals': goals_data,
+            'summary': {
+                'total_goals': len(goals_data),
+                'total_target_amount': round(total_target, 2),
+                'total_saved_so_far': round(total_saved, 2),
+                'total_weekly_target': round(active_weekly_target, 2),
+                'overall_progress_pct': round((total_saved / total_target * 100) if total_target > 0 else 0.0, 1),
+            },
+            'evaluation': evaluation,
+        }, status=status.HTTP_200_OK)
+
+    # POST create
+    serializer = GoalSerializer(data=request.data)
+    if serializer.is_valid():
+        goal = serializer.save(user=request.user)
+        # Check if saved_so_far already reached target
+        if float(goal.saved_so_far) >= float(goal.target_amount):
+            goal.status = Goal.Status.DONE
+            goal.save(update_fields=['status'])
+        return Response(GoalSerializer(goal).data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def goal_detail_view(request, pk):
+    """
+    GET /api/goals/{id}/ — retrieve goal detail
+    PUT/PATCH /api/goals/{id}/ — update goal
+    DELETE /api/goals/{id}/ — delete goal
+    """
+    try:
+        goal = Goal.objects.get(pk=pk, user=request.user)
+    except Goal.DoesNotExist:
+        return Response({'error': 'Goal not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        return Response(GoalSerializer(goal).data)
+
+    if request.method == 'DELETE':
+        goal.delete()
+        return Response({'success': True, 'message': 'Goal deleted successfully.'}, status=status.HTTP_200_OK)
+
+    # PUT or PATCH
+    partial = (request.method == 'PATCH')
+    serializer = GoalSerializer(goal, data=request.data, partial=partial)
+    if serializer.is_valid():
+        updated_goal = serializer.save()
+        if float(updated_goal.saved_so_far) >= float(updated_goal.target_amount):
+            updated_goal.status = Goal.Status.DONE
+            updated_goal.save(update_fields=['status'])
+        return Response(GoalSerializer(updated_goal).data, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def goal_contribute_view(request, pk):
+    """
+    POST /api/goals/{id}/contribute
+    Body: { "amount": 500 }
+    Increases saved_so_far, adapts weekly target, and marks done if goal reached.
+    """
+    try:
+        goal = Goal.objects.get(pk=pk, user=request.user)
+    except Goal.DoesNotExist:
+        return Response({'error': 'Goal not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    amount_raw = request.data.get('amount')
+    if amount_raw is None:
+        return Response({'error': 'Contribution amount is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        amount = float(amount_raw)
+        if amount <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return Response({'error': 'Amount must be a positive number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    updated_goal, just_completed = contribute_to_goal(goal, amount)
+
+    return Response({
+        'goal': GoalSerializer(updated_goal).data,
+        'amount_contributed': amount,
+        'goal_completed': just_completed or (updated_goal.status == Goal.Status.DONE),
+        'message': f"Successfully contributed ₹{amount:,.2f} towards '{updated_goal.name}'!",
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def goal_suggestion_view(request, pk=None):
+    """
+    GET /api/goals/suggestion/ or GET /api/goals/{id}/suggestion/
+    'I'm behind — what should I cut?' intelligent background diagnostic.
+    Compares recent savings rate against required weekly target, flags if behind,
+    and uses Phase 5 forecasting to suggest optimal discretionary category cuts.
+    """
+    goal_id = pk or request.query_params.get('goal_id')
+    if goal_id is not None:
+        try:
+            goal_id = int(goal_id)
+        except (ValueError, TypeError):
+            goal_id = None
+
+    suggestion = check_goal_progress_and_suggest_cut(user=request.user, goal_id=goal_id)
+    return Response(suggestion, status=status.HTTP_200_OK)

@@ -20,6 +20,13 @@ from .forecasting_service import (
     simulate_whatif_adjustments,
 )
 
+from .goal_service import (
+    calculate_goal_metrics,
+    contribute_to_goal,
+    check_goal_progress_and_suggest_cut,
+    TRIMMABLE_CATEGORIES,
+)
+
 __all__ = [
     "process_uploaded_statement",
     "validate_upload",
@@ -37,4 +44,8 @@ __all__ = [
     "forecast_daily_spending",
     "calculate_cash_flow_runway",
     "simulate_whatif_adjustments",
+    "calculate_goal_metrics",
+    "contribute_to_goal",
+    "check_goal_progress_and_suggest_cut",
+    "TRIMMABLE_CATEGORIES",
 ]

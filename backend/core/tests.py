@@ -12,7 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Statement, Transaction, UserProfile
+from .models import Statement, Transaction, UserProfile, Goal
 from .parsers import parse_statement
 from .parsers.sbi_csv import SbiCsvParser
 from .parsers.hdfc_pdf import HdfcPdfParser
@@ -881,3 +881,194 @@ class ForecastingAndRunwaySimulatorTests(TestCase):
         # Reducing by 50% must save money and increase or maintain runway days
         self.assertGreater(res.data["money_saved_30d"], 0)
         self.assertGreaterEqual(res.data["adjusted_runway_days"], res.data["original_runway_days"])
+
+
+class GoalPlannerTests(TestCase):
+    """
+    Phase 6 Tests — Goal Planner & Adaptive Savings
+    Covers:
+      - Goal model & dynamic weekly target calculation
+      - Adaptive weekly target updates when saved_so_far or deadline changes
+      - CRUD endpoints at /api/goals
+      - Contribution endpoint at /api/goals/{id}/contribute
+      - Background rate check & trim suggestions using Phase 5 forecasting
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="student_planner",
+            email="planner@campus.edu",
+            password="testpassword123",
+        )
+        self.profile = UserProfile.objects.create(
+            user=self.user,
+            college_roll_number="CS2026-PLANNER",
+            monthly_income=Decimal("15000.00"),
+            monthly_budget_limit=Decimal("10000.00"),
+        )
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename="sample_stmt.csv",
+            file_type="csv",
+            status=Statement.Status.DONE,
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_weekly_target_calculation_and_adaptation(self):
+        """
+        Weekly target = (target_amount - saved_so_far) / weeks_remaining.
+        Adapts dynamically when saved_so_far or deadline changes.
+        """
+        today = date.today()
+        # Deadline 4 weeks (28 days) away, target = ₹8,000, saved = ₹0
+        goal = Goal.objects.create(
+            user=self.user,
+            name="New Laptop",
+            target_amount=Decimal("8000.00"),
+            saved_so_far=Decimal("0.00"),
+            deadline=today + timedelta(days=28),
+        )
+
+        # 28 days = exactly 4.0 weeks -> target is 8000 / 4 = 2000/week
+        self.assertEqual(goal.weeks_remaining, 4.0)
+        self.assertEqual(goal.weekly_target, 2000.0)
+        self.assertEqual(goal.progress_percentage, 0.0)
+
+        # Contribute ₹4,000 -> remaining ₹4,000 / 4 weeks = 1000/week
+        goal.contribute(4000.00)
+        goal.refresh_from_db()
+        self.assertEqual(goal.saved_so_far, Decimal("4000.00"))
+        self.assertEqual(goal.weekly_target, 1000.0)
+        self.assertEqual(goal.progress_percentage, 50.0)
+
+        # Deadline shortened to 2 weeks (14 days) -> remaining ₹4,000 / 2 = 2000/week
+        goal.deadline = today + timedelta(days=14)
+        goal.save()
+        self.assertEqual(goal.weeks_remaining, 2.0)
+        self.assertEqual(goal.weekly_target, 2000.0)
+
+        # Target completed -> status becomes done, weekly target = 0
+        goal.contribute(4000.00)
+        goal.refresh_from_db()
+        self.assertEqual(goal.status, Goal.Status.DONE)
+        self.assertEqual(goal.weekly_target, 0.0)
+        self.assertEqual(goal.progress_percentage, 100.0)
+
+    def test_goals_crud_endpoints(self):
+        """Tests full CRUD cycle on /api/goals and /api/goals/{id}/."""
+        today = date.today()
+        deadline_str = (today + timedelta(days=35)).isoformat()
+
+        # 1. Create Goal
+        create_res = self.client.post(
+            "/api/goals/",
+            {
+                "name": "Exam Registration Fee",
+                "target_amount": 3500.00,
+                "saved_so_far": 500.00,
+                "deadline": deadline_str,
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        goal_id = create_res.data["id"]
+        self.assertEqual(create_res.data["name"], "Exam Registration Fee")
+        self.assertIn("weekly_target", create_res.data)
+        self.assertGreater(create_res.data["weekly_target"], 0)
+
+        # 2. List Goals
+        list_res = self.client.get("/api/goals/")
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertIn("goals", list_res.data)
+        self.assertIn("summary", list_res.data)
+        self.assertIn("evaluation", list_res.data)
+        self.assertEqual(len(list_res.data["goals"]), 1)
+
+        # 3. Retrieve Goal detail
+        detail_res = self.client.get(f"/api/goals/{goal_id}/")
+        self.assertEqual(detail_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_res.data["id"], goal_id)
+
+        # 4. Update Goal (PATCH)
+        patch_res = self.client.patch(
+            f"/api/goals/{goal_id}/",
+            {"name": "GATE Exam Fee"},
+            format="json",
+        )
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data["name"], "GATE Exam Fee")
+
+        # 5. Delete Goal
+        del_res = self.client.delete(f"/api/goals/{goal_id}/")
+        self.assertEqual(del_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(Goal.objects.filter(id=goal_id).exists())
+
+    def test_goal_contribute_endpoint(self):
+        """POST /api/goals/{id}/contribute logs progress and transitions to done when reached."""
+        today = date.today()
+        goal = Goal.objects.create(
+            user=self.user,
+            name="Placement Suit Fund",
+            target_amount=Decimal("5000.00"),
+            saved_so_far=Decimal("2000.00"),
+            deadline=today + timedelta(days=30),
+        )
+
+        # Partial contribution of ₹1,000
+        res = self.client.post(
+            f"/api/goals/{goal.id}/contribute/",
+            {"amount": 1000},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["amount_contributed"], 1000.0)
+        self.assertFalse(res.data["goal_completed"])
+        self.assertEqual(float(res.data["goal"]["saved_so_far"]), 3000.0)
+
+        # Final contribution of ₹2,000 (reaches target ₹5,000)
+        res2 = self.client.post(
+            f"/api/goals/{goal.id}/contribute/",
+            {"amount": 2000},
+            format="json",
+        )
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+        self.assertTrue(res2.data["goal_completed"])
+        self.assertEqual(res2.data["goal"]["status"], Goal.Status.DONE)
+
+    def test_background_check_and_category_trim_suggestion(self):
+        """
+        When student is falling behind their required weekly rate,
+        the background check identifies the deficit and suggests a trimmable category cut.
+        """
+        today = date.today()
+        # Active goal needing ₹2,000/week (₹8,000 due in 4 weeks)
+        Goal.objects.create(
+            user=self.user,
+            name="Emergency Fund",
+            target_amount=Decimal("8000.00"),
+            saved_so_far=Decimal("0.00"),
+            deadline=today + timedelta(days=28),
+        )
+
+        # User has high spending on Food (₹1,500/day over past 10 days)
+        for i in range(10):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal("1500.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        res = self.client.get("/api/goals/suggestion/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data["has_active_goals"])
+        self.assertTrue(res.data["is_behind"])
+        self.assertGreater(res.data["needed_weekly_rate"], 0)
+        self.assertGreater(res.data["weekly_deficit"], 0)
+        self.assertEqual(res.data["suggested_category"], "Food")
+        self.assertGreater(res.data["recommended_reduction_percent"], 0)
+        self.assertGreater(res.data["projected_weekly_savings"], 0)
+        self.assertIn("message", res.data)

@@ -125,7 +125,7 @@ class LoginSerializer(serializers.Serializer):
 
 # ── Statement & Transaction serializers ────────────────────────────────────
 
-from .models import Statement, Transaction, PayeeMapping, ExpenseCategory  # noqa: E402
+from .models import Statement, Transaction, PayeeMapping, ExpenseCategory, Goal  # noqa: E402
 
 
 class PayeeMappingSerializer(serializers.ModelSerializer):
@@ -181,3 +181,39 @@ class StatementSummarySerializer(serializers.ModelSerializer):
             'date_from', 'date_to', 'uploaded_at', 'processed_at',
         ]
         read_only_fields = fields
+
+
+class GoalSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Goal model with computed weekly target and progress percentage.
+    """
+    weekly_target = serializers.FloatField(read_only=True)
+    weeks_remaining = serializers.FloatField(read_only=True)
+    progress_percentage = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = Goal
+        fields = [
+            'id',
+            'name',
+            'target_amount',
+            'saved_so_far',
+            'deadline',
+            'status',
+            'weekly_target',
+            'weeks_remaining',
+            'progress_percentage',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_target_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Target amount must be greater than zero.")
+        return value
+
+    def validate_saved_so_far(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Saved amount cannot be negative.")
+        return value

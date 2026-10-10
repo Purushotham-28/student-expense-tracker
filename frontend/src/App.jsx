@@ -13,7 +13,7 @@ import {
   Cell,
   Legend,
 } from 'recharts';
-import { checkApiHealth, authService } from './api';
+import { checkApiHealth, authService, goalsService } from './api';
 import ProtectedRoute from './components/ProtectedRoute';
 import BudgetLimitModal from './components/BudgetLimitModal';
 import Login from './pages/Login';
@@ -21,6 +21,7 @@ import Register from './pages/Register';
 import Upload from './pages/Upload';
 import Verify from './pages/Verify';
 import Runway from './pages/Runway';
+import Goals from './pages/Goals';
 import './App.css';
 
 // Initial sample transactions
@@ -79,6 +80,9 @@ function Navigation({ apiStatus, userProfile, onLogout }) {
           <Link to="/runway" className={`nav-item ${location.pathname === '/runway' ? 'active' : ''}`} id="nav-runway">
             Runway
           </Link>
+          <Link to="/goals" className={`nav-item ${location.pathname === '/goals' ? 'active' : ''}`} id="nav-goals">
+            Goals
+          </Link>
           <Link to="/expenses" className={`nav-item ${location.pathname === '/expenses' ? 'active' : ''}`} id="nav-expenses">
             Expenses
           </Link>
@@ -135,6 +139,25 @@ function Dashboard({ expenses, onAddExpense, userProfile, onOpenBudgetModal }) {
     date: new Date().toISOString().split('T')[0],
     method: 'Debit Card',
   });
+  const [goalEvaluation, setGoalEvaluation] = useState(null);
+
+  useEffect(() => {
+    // Background-style check called on dashboard load
+    let isMounted = true;
+    goalsService
+      .getGoals('active')
+      .then((res) => {
+        if (isMounted && res.evaluation) {
+          setGoalEvaluation(res.evaluation);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not run background goal check on dashboard load:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const totalSpent = expenses.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
   const monthlyAllowance = parseFloat(userProfile?.monthly_budget_limit || 800.00);
@@ -196,6 +219,54 @@ function Dashboard({ expenses, onAddExpense, userProfile, onOpenBudgetModal }) {
           </a>
         </div>
       </div>
+
+      {/* Goal Velocity Background Check Banner */}
+      {goalEvaluation && goalEvaluation.has_active_goals && goalEvaluation.is_behind && (
+        <div
+          style={{
+            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.1) 100%)',
+            border: '1px solid rgba(248, 113, 113, 0.4)',
+            borderRadius: '16px',
+            padding: '1.1rem 1.4rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+            marginBottom: '1.5rem',
+            flexWrap: 'wrap',
+          }}
+          id="dashboard-goals-behind-banner"
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: '1.8rem' }}>⚠️</span>
+            <div>
+              <strong style={{ color: '#f8fafc', fontSize: '1rem' }}>
+                Savings Velocity Alert: Falling behind goal targets by ₹{goalEvaluation.weekly_deficit?.toLocaleString()}/wk
+              </strong>
+              <p style={{ margin: '0.25rem 0 0 0', color: '#cbd5e1', fontSize: '0.9rem', lineHeight: '1.4' }}>
+                {goalEvaluation.message}
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/goals"
+            style={{
+              background: '#ef4444',
+              color: '#ffffff',
+              padding: '0.65rem 1.15rem',
+              borderRadius: '10px',
+              fontWeight: 600,
+              fontSize: '0.88rem',
+              textDecoration: 'none',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.35)',
+            }}
+            id="btn-dashboard-view-cuts"
+          >
+            I'm Behind — What to Cut? →
+          </Link>
+        </div>
+      )}
 
       {/* Metrics Row */}
       <section className="metrics-grid">
@@ -657,6 +728,15 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Runway />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/goals"
+              element={
+                <ProtectedRoute>
+                  <Goals />
                 </ProtectedRoute>
               }
             />

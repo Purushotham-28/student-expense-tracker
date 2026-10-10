@@ -296,5 +296,78 @@ export const planningService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 6 — Goal Planner & Adaptive Savings Service
+// ──────────────────────────────────────────────────────────────────────────────
+export const goalsService = {
+  /**
+   * Fetch all goals and background evaluation summary.
+   * status: 'all' | 'active' | 'done'
+   */
+  async getGoals(status = 'all') {
+    const params = new URLSearchParams();
+    if (status && status !== 'all') {
+      params.append('status', status);
+    }
+    const response = await api.get(`goals/?${params.toString()}`);
+    return response.data;
+  },
+
+  /**
+   * Create a new savings goal.
+   * payload: { name, target_amount, deadline, saved_so_far }
+   */
+  async createGoal(payload) {
+    const response = await api.post('goals/', payload);
+    return response.data;
+  },
+
+  /**
+   * Retrieve goal details.
+   */
+  async getGoal(id) {
+    const response = await api.get(`goals/${id}/`);
+    return response.data;
+  },
+
+  /**
+   * Update goal details.
+   */
+  async updateGoal(id, payload) {
+    const response = await api.patch(`goals/${id}/`, payload);
+    return response.data;
+  },
+
+  /**
+   * Delete a goal.
+   */
+  async deleteGoal(id) {
+    const response = await api.delete(`goals/${id}/`);
+    return response.data;
+  },
+
+  /**
+   * Contribute progress to a goal.
+   * payload: { amount: 500 }
+   */
+  async contribute(id, amount) {
+    const response = await api.post(`goals/${id}/contribute/`, { amount });
+    return response.data;
+  },
+
+  /**
+   * Get intelligent discretionary category cut suggestion.
+   * Optional goalId to inspect specific goal.
+   */
+  async getSuggestion(goalId = null) {
+    const params = new URLSearchParams();
+    if (goalId) {
+      params.append('goal_id', goalId);
+    }
+    const response = await api.get(`goals/suggestion/?${params.toString()}`);
+    return response.data;
+  },
+};
+
 export default api;
 

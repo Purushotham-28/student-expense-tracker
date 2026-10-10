@@ -1,4 +1,6 @@
 import os
+from datetime import date
+from decimal import Decimal
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -157,3 +159,70 @@ class PayeeMapping(models.Model):
 
     def __str__(self):
         return f"{self.user.username}: {self.payee_key} -> {self.category} ({self.times_confirmed}x)"
+
+
+class Goal(models.Model):
+    """
+    Phase 6 — Goal Planner
+    Allows students to track savings goals (laptop, exam fees, placement fund)
+    with adaptive weekly savings targets.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        DONE = "done", "Done"
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="goals"
+    )
+    name = models.CharField(
+        max_length=200, help_text="e.g. Laptop, Exam fees, Placement fund"
+    )
+    target_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    saved_so_far = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    deadline = models.DateField()
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["deadline", "-created_at"]
+
+    @property
+    def weeks_remaining(self) -> float:
+        today = date.today()
+        days_left = (self.deadline - today).days
+        if days_left <= 0:
+            return 1.0
+        return max(1.0, round(days_left / 7.0, 2))
+
+    @property
+    def weekly_target(self) -> float:
+        remaining = float(self.target_amount) - float(self.saved_so_far)
+        if remaining <= 0 or self.status == self.Status.DONE:
+            return 0.0
+        return round(remaining / self.weeks_remaining, 2)
+
+    @property
+    def progress_percentage(self) -> float:
+        if not self.target_amount or float(self.target_amount) <= 0:
+            return 0.0
+        pct = (float(self.saved_so_far) / float(self.target_amount)) * 100.0
+        return round(min(100.0, max(0.0, pct)), 1)
+
+    def contribute(self, amount: float | Decimal) -> Decimal:
+        amount_dec = Decimal(str(amount))
+        self.saved_so_far = self.saved_so_far + amount_dec
+        if self.saved_so_far >= self.target_amount:
+            self.status = self.Status.DONE
+        self.save()
+        return self.saved_so_far
+
+    def __str__(self):
+        return f"{self.user.username} — {self.name} (₹{self.saved_so_far}/₹{self.target_amount})"
