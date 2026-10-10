@@ -109,3 +109,49 @@ class Transaction(models.Model):
     def __str__(self):
         direction = "DR" if self.is_debit else "CR"
         return f"{self.date} {direction} ₹{self.amount} — {self.payee_name or self.remark}"
+
+
+class ExpenseCategory(models.TextChoices):
+    FOOD = "Food", "Food"
+    TRAVEL = "Travel", "Travel"
+    GROCERIES_SHOPPING = "Groceries/Shopping", "Groceries/Shopping"
+    SUBSCRIPTIONS = "Subscriptions", "Subscriptions"
+    RENT_HOSTEL = "Rent/Hostel", "Rent/Hostel"
+    ACADEMICS = "Academics", "Academics"
+    FRIEND_SPLIT = "Friend/Split", "Friend/Split"
+    ENTERTAINMENT = "Entertainment", "Entertainment"
+    OTHER = "Other", "Other"
+
+
+class PayeeMapping(models.Model):
+    """
+    Stores user-specific category mappings for known payees or UPI IDs.
+    Takes precedence over the ML categorizer with 1.0 confidence.
+    """
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="payee_mappings"
+    )
+    payee_key = models.CharField(
+        max_length=255, db_index=True,
+        help_text="Normalized payee name or UPI ID",
+    )
+    category = models.CharField(
+        max_length=100, choices=ExpenseCategory.choices,
+    )
+    times_confirmed = models.PositiveIntegerField(
+        default=1,
+        help_text="How many times the user has confirmed or assigned this mapping",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "payee_key"], name="unique_user_payee_mapping"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user.username}: {self.payee_key} -> {self.category} ({self.times_confirmed}x)"

@@ -8,6 +8,9 @@ from .views import (
     upload_statement,
     list_statements,
     statement_detail,
+    categorize_statement_view,
+    payee_mappings_view,
+    categorize_transaction_view,
 )
 
 urlpatterns = [
@@ -25,4 +28,9 @@ urlpatterns = [
     re_path(r'^statements/upload/?$', upload_statement, name='statement_upload'),
     re_path(r'^statements/?$', list_statements, name='statement_list'),
     re_path(r'^statements/(?P<pk>\d+)/?$', statement_detail, name='statement_detail'),
+    re_path(r'^statements/(?P<pk>\d+)/categorize/?$', categorize_statement_view, name='statement_categorize'),
+
+    # Payee Mappings & Categorization
+    re_path(r'^payee-mappings/?$', payee_mappings_view, name='payee_mappings'),
+    re_path(r'^transactions/(?P<pk>\d+)/categorize/?$', categorize_transaction_view, name='transaction_categorize'),
 ]

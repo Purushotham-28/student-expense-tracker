@@ -350,3 +350,186 @@ class StatementUploadEndpointTests(TestCase):
         self.assertEqual(first.status, Transaction.ParseStatus.PENDING)
         self.assertIsNone(first.category)
         self.assertIsNone(first.confidence)
+
+
+# ── Phase 3 Tests — Hybrid Categorization Engine ──────────────────────────
+
+from io import StringIO
+from django.core.management import call_command
+from .models import PayeeMapping, ExpenseCategory
+from .services.categorization_service import (
+    normalize_payee,
+    get_amount_bucket,
+    extract_features,
+    categorize_transaction,
+    generate_synthetic_dataset,
+    CATEGORIES,
+)
+
+
+class HybridCategorizationEngineTests(TestCase):
+    """
+    Phase 3 Unit Tests covering:
+      - normalize_payee function (UPI preference, lowercase, punctuation/spaces stripping)
+      - PayeeMapping lookup with confidence 1.0
+      - ML fallback classifier returning a valid category and confidence in (0, 1]
+      - train_categorizer management command execution
+      - Payee mapping API and transaction categorization endpoints
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='student_phase3',
+            password='testpassword123',
+            email='student3@college.edu',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename='test_stmt.csv',
+            status=Statement.Status.DONE,
+            transaction_count=2,
+        )
+
+    # ── Payee Normalization Tests ──────────────────────────────────────────
+
+    def test_normalize_payee_prefers_upi_id(self):
+        """Prefer the UPI ID as the key when present, lowercased and cleaned."""
+        key = normalize_payee(name="Zomato Limited", upi_id="Zomato@hdfcbank ")
+        self.assertEqual(key, "zomato@hdfcbank")
+
+    def test_normalize_payee_strips_punctuation_and_spaces_from_name(self):
+        """When upi_id is empty/None, lowercase and strip punctuation and extra spaces."""
+        key = normalize_payee(name="  SWIGGY - Bangalore, Pvt. Ltd.!! ", upi_id=None)
+        self.assertEqual(key, "swiggy bangalore pvt ltd")
+
+    def test_normalize_payee_empty_or_none(self):
+        """Handles empty and None strings safely."""
+        self.assertEqual(normalize_payee(None, None), "")
+        self.assertEqual(normalize_payee("", ""), "")
+        self.assertEqual(normalize_payee("   ", "   "), "")
+
+    def test_get_amount_bucket_tiers(self):
+        """Amount buckets classify amounts into appropriate tiers."""
+        self.assertEqual(get_amount_bucket(40), "micro")
+        self.assertEqual(get_amount_bucket(150), "low")
+        self.assertEqual(get_amount_bucket(500), "medium")
+        self.assertEqual(get_amount_bucket(1200), "high")
+        self.assertEqual(get_amount_bucket(3500), "very_high")
+        self.assertEqual(get_amount_bucket(9000), "large")
+
+    # ── Hybrid Categorization Logic Tests ──────────────────────────────────
+
+    def test_known_payee_mapping_returns_confidence_1_0(self):
+        """
+        1. Look up PayeeMapping for this user+payee_key.
+        If found, assign that category with confidence 1.0.
+        """
+        # Create PayeeMapping for user
+        PayeeMapping.objects.create(
+            user=self.user,
+            payee_key="swiggy@icici",
+            category=ExpenseCategory.FOOD,
+            times_confirmed=3,
+        )
+
+        tx = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 15),
+            amount=Decimal("350.00"),
+            payee_name="Swiggy Delivery",
+            upi_id="Swiggy@icici",
+            remark="Dinner meal order",
+        )
+
+        category, confidence, source = categorize_transaction(tx, save=True)
+
+        self.assertEqual(category, ExpenseCategory.FOOD)
+        self.assertEqual(confidence, 1.0)
+        self.assertEqual(source, "payee_mapping")
+
+        # Verify transaction in database was updated
+        tx.refresh_from_db()
+        self.assertEqual(tx.category, ExpenseCategory.FOOD)
+        self.assertEqual(tx.confidence, 1.0)
+        self.assertEqual(tx.status, Transaction.ParseStatus.CATEGORISED)
+
+    def test_unmapped_transaction_returns_category_and_confidence_between_0_and_1(self):
+        """
+        2. An unmapped transaction runs ML classifier, returns a valid category
+        and confidence between 0 and 1.
+        """
+        tx = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 20),
+            amount=Decimal("45.00"),
+            payee_name="Rapido Bike Taxi",
+            upi_id="rapido@upi",
+            remark="Rapido ride to college gate",
+        )
+
+        category, confidence, source = categorize_transaction(tx, save=True)
+
+        self.assertIn(category, CATEGORIES)
+        self.assertGreater(confidence, 0.0)
+        self.assertLessEqual(confidence, 1.0)
+        self.assertEqual(source, "ml_model")
+
+        # Verify transaction record is saved with category & confidence
+        tx.refresh_from_db()
+        self.assertEqual(tx.category, category)
+        self.assertEqual(tx.confidence, confidence)
+        self.assertEqual(tx.status, Transaction.ParseStatus.CATEGORISED)
+
+    def test_synthetic_dataset_shape(self):
+        """Synthetic dataset has 270 rows covering all 9 categories (30 each)."""
+        df = generate_synthetic_dataset()
+        self.assertEqual(len(df), 270)
+        self.assertEqual(df["category"].nunique(), 9)
+        for cat in CATEGORIES:
+            self.assertEqual(len(df[df["category"] == cat]), 30)
+
+    def test_train_categorizer_management_command(self):
+        """The `train_categorizer` command executes cleanly and outputs success."""
+        out = StringIO()
+        call_command("train_categorizer", stdout=out)
+        output = out.getvalue()
+        self.assertIn("Successfully trained", output)
+        self.assertIn("categorizer_model.joblib", output)
+
+    # ── API Endpoints Tests ────────────────────────────────────────────────
+
+    def test_payee_mapping_create_and_list_api(self):
+        """POST /api/payee-mappings/ creates a mapping; GET lists user mappings."""
+        post_res = self.client.post("/api/payee-mappings/", {
+            "payee_name": "Campus Bookstore",
+            "category": "Academics",
+        }, format="json")
+        self.assertEqual(post_res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(post_res.data["category"], "Academics")
+        self.assertEqual(post_res.data["payee_key"], "campus bookstore")
+
+        # GET
+        get_res = self.client.get("/api/payee-mappings/")
+        self.assertEqual(get_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(get_res.data), 1)
+
+    def test_categorize_transaction_endpoint(self):
+        """POST /api/transactions/<id>/categorize/ triggers categorization."""
+        tx = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            amount=Decimal("150.00"),
+            payee_name="PVR Cinemas",
+            upi_id="pvrcinemas@hdfcbank",
+            remark="Movie ticket",
+        )
+        res = self.client.post(f"/api/transactions/{tx.pk}/categorize/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("category", res.data)
+        self.assertIn("confidence", res.data)
+        self.assertGreater(res.data["confidence"], 0)

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import UserProfile, Statement, Transaction
+from .models import UserProfile, Statement, Transaction, PayeeMapping
 
 
 class UserProfileInline(admin.StackedInline):
@@ -71,10 +71,19 @@ class StatementAdmin(admin.ModelAdmin):
 class TransactionAdmin(admin.ModelAdmin):
     list_display = (
         "id", "user", "date", "amount", "is_debit",
-        "payee_name", "category", "status", "created_at",
+        "payee_name", "category", "confidence", "status", "created_at",
     )
-    list_filter = ("is_debit", "status", "date")
+    list_filter = ("is_debit", "category", "status", "date")
     search_fields = ("payee_name", "upi_id", "remark", "user__username")
     readonly_fields = ("created_at",)
     ordering = ("-date", "-created_at")
+
+
+@admin.register(PayeeMapping)
+class PayeeMappingAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "payee_key", "category", "times_confirmed", "updated_at")
+    list_filter = ("category", "updated_at")
+    search_fields = ("user__username", "payee_key")
+    readonly_fields = ("created_at", "updated_at")
+    ordering = ("-updated_at",)
 

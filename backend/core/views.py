@@ -184,3 +184,113 @@ def statement_detail(request, pk):
     except Statement.DoesNotExist:
         return Response({'error': 'Statement not found.'}, status=status.HTTP_404_NOT_FOUND)
     return Response(StatementSerializer(stmt).data)
+
+
+# ── Phase 3 — Hybrid Categorization & Payee Mappings ────────────────────────
+
+from .models import PayeeMapping, Transaction  # noqa: E402
+from .serializers import PayeeMappingSerializer, TransactionSerializer  # noqa: E402
+from .services.categorization_service import (  # noqa: E402
+    categorize_transaction,
+    normalize_payee,
+    CATEGORIES,
+)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def payee_mappings_view(request):
+    """
+    GET /api/payee-mappings/ — list all user mappings
+    POST /api/payee-mappings/ — create or update a payee mapping
+      Payload: { "payee_name": "...", "upi_id": "...", "category": "Food" }
+      or { "payee_key": "...", "category": "Food" }
+    """
+    if request.method == 'GET':
+        mappings = PayeeMapping.objects.filter(user=request.user)
+        return Response(PayeeMappingSerializer(mappings, many=True).data)
+
+    data = request.data.copy()
+    payee_key = data.get('payee_key')
+    if not payee_key:
+        payee_key = normalize_payee(data.get('payee_name'), data.get('upi_id'))
+
+    if not payee_key:
+        return Response(
+            {'error': 'payee_key, payee_name, or upi_id is required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    category = data.get('category')
+    if not category or category not in CATEGORIES:
+        return Response(
+            {'error': f"Valid category required. Must be one of: {CATEGORIES}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    mapping, created = PayeeMapping.objects.get_or_create(
+        user=request.user,
+        payee_key=payee_key,
+        defaults={'category': category, 'times_confirmed': 1},
+    )
+    if not created:
+        mapping.category = category
+        mapping.times_confirmed += 1
+        mapping.save(update_fields=['category', 'times_confirmed', 'updated_at'])
+
+    return Response(
+        PayeeMappingSerializer(mapping).data,
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def categorize_transaction_view(request, pk):
+    """
+    POST /api/transactions/<pk>/categorize/
+    Runs hybrid categorization on a single transaction and saves the result.
+    """
+    try:
+        tx = Transaction.objects.get(pk=pk, user=request.user)
+    except Transaction.DoesNotExist:
+        return Response({'error': 'Transaction not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    cat, conf, source = categorize_transaction(tx, save=True)
+    return Response({
+        'transaction_id': tx.pk,
+        'category': cat,
+        'confidence': conf,
+        'source': source,
+        'transaction': TransactionSerializer(tx).data,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def categorize_statement_view(request, pk):
+    """
+    POST /api/statements/<pk>/categorize/
+    Categorizes all transactions for a given statement.
+    """
+    try:
+        stmt = Statement.objects.get(pk=pk, user=request.user)
+    except Statement.DoesNotExist:
+        return Response({'error': 'Statement not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    txns = stmt.transactions.all()
+    results = []
+    for tx in txns:
+        cat, conf, src = categorize_transaction(tx, save=True)
+        results.append({
+            'transaction_id': tx.pk,
+            'category': cat,
+            'confidence': conf,
+            'source': src,
+        })
+
+    return Response({
+        'statement_id': stmt.pk,
+        'categorized_count': len(results),
+        'results': results,
+    })

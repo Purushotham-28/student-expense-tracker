@@ -125,7 +125,24 @@ class LoginSerializer(serializers.Serializer):
 
 # ── Statement & Transaction serializers ────────────────────────────────────
 
-from .models import Statement, Transaction  # noqa: E402
+from .models import Statement, Transaction, PayeeMapping, ExpenseCategory  # noqa: E402
+
+
+class PayeeMappingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayeeMapping
+        fields = [
+            'id', 'payee_key', 'category', 'times_confirmed',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_category(self, value):
+        if value not in ExpenseCategory.values:
+            raise serializers.ValidationError(
+                f"Invalid category '{value}'. Must be one of: {list(ExpenseCategory.values)}"
+            )
+        return value
 
 
 class TransactionSerializer(serializers.ModelSerializer):
@@ -136,7 +153,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             'payee_name', 'upi_id', 'remark',
             'category', 'confidence', 'status', 'created_at',
         ]
-        read_only_fields = fields
+        read_only_fields = ['id', 'created_at']
 
 
 class StatementSerializer(serializers.ModelSerializer):
