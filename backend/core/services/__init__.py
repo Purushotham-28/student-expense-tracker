@@ -14,6 +14,12 @@ from .categorization_service import (
     MODEL_PATH,
 )
 
+from .forecasting_service import (
+    forecast_daily_spending,
+    calculate_cash_flow_runway,
+    simulate_whatif_adjustments,
+)
+
 __all__ = [
     "process_uploaded_statement",
     "validate_upload",
@@ -28,4 +34,7 @@ __all__ = [
     "categorize_transactions",
     "CATEGORIES",
     "MODEL_PATH",
+    "forecast_daily_spending",
+    "calculate_cash_flow_runway",
+    "simulate_whatif_adjustments",
 ]

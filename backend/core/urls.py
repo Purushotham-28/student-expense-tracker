@@ -13,6 +13,8 @@ from .views import (
     categorize_transaction_view,
     list_transactions_view,
     confirm_transaction_view,
+    runway_view,
+    whatif_view,
 )
 
 urlpatterns = [
@@ -37,4 +39,8 @@ urlpatterns = [
     re_path(r'^transactions/?$', list_transactions_view, name='transaction_list'),
     re_path(r'^transactions/(?P<pk>\d+)/categorize/?$', categorize_transaction_view, name='transaction_categorize'),
     re_path(r'^transactions/(?P<pk>\d+)/confirm/?$', confirm_transaction_view, name='transaction_confirm'),
+
+    # Phase 5 — Forecasting & Runway Simulator
+    re_path(r'^planning/runway/?$', runway_view, name='planning_runway'),
+    re_path(r'^planning/whatif/?$', whatif_view, name='planning_whatif'),
 ]

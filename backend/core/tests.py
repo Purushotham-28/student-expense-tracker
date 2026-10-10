@@ -3,7 +3,7 @@ Phase 2 Backend Tests — Statement Upload & Parsing
 Covers: SBI CSV parsing, HDFC PDF parsing, upload endpoint, and edge cases.
 """
 import os
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.test import TestCase, override_settings
@@ -12,7 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Statement, Transaction
+from .models import Statement, Transaction, UserProfile
 from .parsers import parse_statement
 from .parsers.sbi_csv import SbiCsvParser
 from .parsers.hdfc_pdf import HdfcPdfParser
@@ -726,3 +726,158 @@ class ConfidenceRoutingAndVerificationFlowTests(TestCase):
         # Total equals sum of all buckets
         total = summary["auto_count"] + summary["verify_count"] + summary["pending_count"]
         self.assertEqual(total, summary["total_transactions"])
+
+
+# ── Phase 5 Tests — Forecasting & Cash-Flow Runway Simulator ──────────────
+
+from .services.forecasting_service import (
+    forecast_daily_spending,
+    calculate_cash_flow_runway,
+    simulate_whatif_adjustments,
+)
+
+
+class ForecastingAndRunwaySimulatorTests(TestCase):
+    """
+    Phase 5 Tests covering:
+      - Cold-start fallback to baseline average when < 14 days of data.
+      - ARIMA/Prophet forecasting with >= 14 days of data.
+      - Runway date calculation given balance and forecasted burn rate.
+      - GET /api/planning/runway endpoint.
+      - POST /api/planning/whatif simulator reducing spend and extending runway.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='student_phase5',
+            password='testpassword123',
+            email='student5@college.edu',
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            college_roll_number='ROLL-PHASE5',
+            monthly_income=Decimal('15000.00'),
+            monthly_budget_limit=Decimal('12000.00'),
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename='phase5_stmt.csv',
+            status=Statement.Status.DONE,
+            transaction_count=10,
+        )
+
+    def test_cold_start_fallback_to_average_estimate(self):
+        """When user has fewer than 14 days of transactions, fall back to baseline average."""
+        # Create only 3 transactions
+        today = date.today()
+        for i in range(3):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal("250.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        forecast = forecast_daily_spending(self.user, steps=30)
+        self.assertEqual(forecast["method"], "baseline_average")
+        self.assertEqual(len(forecast["forecast_values"]), 30)
+        self.assertGreater(forecast["daily_avg"], 0)
+
+    def test_arima_forecasting_with_sufficient_history(self):
+        """When user has >= 14 days of data, fit ARIMA/Prophet time-series model."""
+        today = date.today()
+        for i in range(20):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal(str(150 + (i % 5) * 40)),
+                is_debit=True,
+                category=ExpenseCategory.FOOD if i % 2 == 0 else ExpenseCategory.TRAVEL,
+            )
+
+        forecast = forecast_daily_spending(self.user, steps=30)
+        self.assertIn(forecast["method"], ["arima", "prophet"])
+        self.assertEqual(len(forecast["forecast_values"]), 30)
+        for v in forecast["forecast_values"]:
+            self.assertGreaterEqual(v, 0)
+
+    def test_runway_calculation_depletion_date(self):
+        """Given current balance and daily burn, computes depletion date."""
+        today = date.today()
+        # Seed 5 transactions with ₹200 daily spend
+        for i in range(5):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal("200.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        # Balance = ₹1,000 → should deplete in ~5 days
+        runway = calculate_cash_flow_runway(user=self.user, current_balance=1000.0)
+
+        self.assertEqual(runway["current_balance"], 1000.0)
+        self.assertTrue(runway["is_exhausted"])
+        self.assertIsNotNone(runway["runway_date"])
+        self.assertGreater(runway["runway_days"], 0)
+        self.assertLessEqual(runway["runway_days"], 15)
+
+    def test_get_runway_endpoint(self):
+        """GET /api/planning/runway returns forecast series and runway date."""
+        today = date.today()
+        Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=today,
+            amount=Decimal("300.00"),
+            is_debit=True,
+            category=ExpenseCategory.FOOD,
+        )
+
+        res = self.client.get("/api/planning/runway/?current_balance=4000")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("runway_date", res.data)
+        self.assertIn("forecast_series", res.data)
+        self.assertIn("daily_burn_rate", res.data)
+        self.assertEqual(res.data["current_balance"], 4000.0)
+        self.assertIsInstance(res.data["forecast_series"], list)
+
+    def test_whatif_adjustment_extends_runway(self):
+        """POST /api/planning/whatif with category reduction extends runway date and saves money."""
+        today = date.today()
+        # 10 days of heavy Food expenses (₹500/day)
+        for i in range(10):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal("500.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        # Call whatif endpoint to reduce Food by 50% with ₹2,500 balance
+        payload = {
+            "category": "Food",
+            "reduce_percent": 50,
+            "current_balance": 2500,
+        }
+        res = self.client.post("/api/planning/whatif/", payload, format="json")
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("original_runway_date", res.data)
+        self.assertIn("adjusted_runway_date", res.data)
+        self.assertIn("days_saved", res.data)
+        self.assertIn("money_saved_30d", res.data)
+
+        # Reducing by 50% must save money and increase or maintain runway days
+        self.assertGreater(res.data["money_saved_30d"], 0)
+        self.assertGreaterEqual(res.data["adjusted_runway_days"], res.data["original_runway_days"])

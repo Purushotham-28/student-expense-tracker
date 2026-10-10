@@ -268,5 +268,33 @@ export const transactionService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 5 — Forecasting & Cash-Flow Runway Service
+// ──────────────────────────────────────────────────────────────────────────────
+export const planningService = {
+  /**
+   * Fetch cash-flow runway and 30-day forecast series.
+   * Optionally pass custom current_balance override.
+   */
+  async getRunway(currentBalance) {
+    const params = new URLSearchParams();
+    if (currentBalance !== undefined && currentBalance !== null && currentBalance !== '') {
+      params.append('current_balance', currentBalance);
+    }
+    const response = await api.get(`planning/runway/?${params.toString()}`);
+    return response.data;
+  },
+
+  /**
+   * Simulate what-if scenario with category spending percentage reductions.
+   * payload can be: { adjustments: { Food: 30, Entertainment: 50 }, current_balance: 12000 }
+   * or { category: 'Food', reduce_percent: 30 }
+   */
+  async simulateWhatIf(payload) {
+    const response = await api.post('planning/whatif/', payload);
+    return response.data;
+  },
+};
+
 export default api;
 

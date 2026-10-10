@@ -438,3 +438,71 @@ def confirm_transaction_view(request, pk):
         'times_confirmed': mapping.times_confirmed if mapping else 1,
         'updated_count': updated_others_count + 1,
     }, status=status.HTTP_200_OK)
+
+
+# ── Phase 5 — Forecasting & Cash-Flow Runway (What-If Simulator) ───────────
+
+from .services.forecasting_service import (  # noqa: E402
+    calculate_cash_flow_runway,
+    simulate_whatif_adjustments,
+)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def runway_view(request):
+    """
+    GET /api/planning/runway
+    Query params:
+      - current_balance: optional float override
+    Returns:
+      - current_balance
+      - runway_date
+      - runway_days
+      - is_exhausted
+      - daily_burn_rate
+      - forecast_series (historical actuals + 30-day forecast with remaining balance trajectory)
+      - category_shares
+      - method ('prophet' | 'arima' | 'baseline_average')
+    """
+    bal_param = request.query_params.get('current_balance')
+    current_balance = None
+    if bal_param is not None:
+        try:
+            current_balance = float(bal_param)
+        except ValueError:
+            pass
+
+    data = calculate_cash_flow_runway(user=request.user, current_balance=current_balance)
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def whatif_view(request):
+    """
+    POST /api/planning/whatif
+    Body can be:
+      - { "category": "Food", "reduce_percent": 30 }
+      - { "adjustments": [{"category": "Food", "reduce_percent": 30}, ...], "current_balance": 15000 }
+      - { "adjustments": { "Food": 30, "Entertainment": 50 } }
+    Returns:
+      - original_runway_date, original_runway_days
+      - adjusted_runway_date, adjusted_runway_days
+      - days_saved, money_saved_30d
+      - adjusted_daily_burn
+      - adjusted_forecast_series
+    """
+    current_balance = request.data.get('current_balance')
+    if current_balance is not None:
+        try:
+            current_balance = float(current_balance)
+        except ValueError:
+            current_balance = None
+
+    data = simulate_whatif_adjustments(
+        user=request.user,
+        adjustments=request.data,
+        current_balance=current_balance,
+    )
+    return Response(data, status=status.HTTP_200_OK)
