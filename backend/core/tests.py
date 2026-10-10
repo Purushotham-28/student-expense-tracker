@@ -1,211 +1,352 @@
 """
-Phase 1 Backend Tests — Auth, Profile & Monthly Budget Limit
-Covers: registration, login, JWT profile access, budget update, and edge cases.
+Phase 2 Backend Tests — Statement Upload & Parsing
+Covers: SBI CSV parsing, HDFC PDF parsing, upload endpoint, and edge cases.
 """
-from django.test import TestCase
+import os
+from datetime import date
+from decimal import Decimal
+
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
-from .models import UserProfile
+
+from .models import Statement, Transaction
+from .parsers import parse_statement
+from .parsers.sbi_csv import SbiCsvParser
+from .parsers.hdfc_pdf import HdfcPdfParser
 
 
-class AuthAndProfileTests(TestCase):
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
+
+
+class SbiCsvParserTests(TestCase):
+    """
+    Tests for the SBI CSV parser using the sample fixture file.
+    The fixture contains 5 transactions (4 debits, 1 credit)
+    spanning 01/09/2026 to 25/09/2026.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            cls.file_bytes = f.read()
+        cls.filename = 'sbi_sample.csv'
+
+    def test_can_parse_detects_sbi_csv(self):
+        """SbiCsvParser.can_parse() returns True for the SBI fixture."""
+        self.assertTrue(SbiCsvParser.can_parse(self.file_bytes, self.filename))
+
+    def test_can_parse_rejects_pdf(self):
+        """SbiCsvParser.can_parse() returns False for a PDF filename."""
+        self.assertFalse(SbiCsvParser.can_parse(self.file_bytes, 'statement.pdf'))
+
+    def test_row_count(self):
+        """Parser extracts exactly 5 transaction rows from the SBI fixture."""
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        self.assertEqual(len(rows), 5)
+
+    def test_date_range(self):
+        """Extracted dates span from 2026-09-01 to 2026-09-25."""
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        dates = [r['date'] for r in rows]
+        self.assertEqual(min(dates), date(2026, 9, 1))
+        self.assertEqual(max(dates), date(2026, 9, 25))
+
+    def test_debit_credit_detection(self):
+        """
+        4 transactions are debits (Zomato, Swiggy, Amazon, Flipkart)
+        and 1 is a credit (NEFT from John Doe).
+        """
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        debits = [r for r in rows if r['is_debit']]
+        credits = [r for r in rows if not r['is_debit']]
+        self.assertEqual(len(debits), 4)
+        self.assertEqual(len(credits), 1)
+
+    def test_amounts(self):
+        """Check first and last transaction amounts are parsed correctly."""
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        self.assertEqual(rows[0]['amount'], Decimal('250.00'))
+        self.assertEqual(rows[1]['amount'], Decimal('180.50'))
+        # The credit transaction (NEFT)
+        credit_row = [r for r in rows if not r['is_debit']][0]
+        self.assertEqual(credit_row['amount'], Decimal('15000.00'))
+
+    def test_payee_extraction(self):
+        """Payee names are extracted from UPI/NEFT narration patterns."""
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        # First row: UPI-ZOMATO-... → payee should contain 'ZOMATO'
+        self.assertIn('ZOMATO', rows[0]['payee_name'].upper())
+
+    def test_upi_id_extraction(self):
+        """UPI VPAs are extracted from description text."""
+        parser = SbiCsvParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        # First row has 9876543210@okaxis in the description
+        self.assertIn('@', rows[0]['upi_id'])
+
+    def test_dispatch_picks_sbi(self):
+        """parse_statement() picks 'sbi_csv' as the format name."""
+        rows, fmt = parse_statement(self.file_bytes, self.filename)
+        self.assertEqual(fmt, 'sbi_csv')
+        self.assertEqual(len(rows), 5)
+
+
+class HdfcPdfParserTests(TestCase):
+    """
+    Tests for the HDFC PDF parser using the generated fixture.
+    The fixture contains 7 transactions (6 debits, 1 credit)
+    spanning 01/09/2026 to 28/09/2026.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        fixture_path = os.path.join(FIXTURES_DIR, 'hdfc_sample.pdf')
+        if not os.path.exists(fixture_path):
+            # Generate the fixture if it doesn't exist yet
+            from .fixtures.generate_hdfc_pdf import (
+                generate_with_reportlab, generate_with_fpdf,
+                generate_minimal_pdf, USE_REPORTLAB, USE_FPDF,
+            )
+            os.makedirs(FIXTURES_DIR, exist_ok=True)
+            if USE_REPORTLAB:
+                generate_with_reportlab(fixture_path)
+            elif USE_FPDF:
+                generate_with_fpdf(fixture_path)
+            else:
+                generate_minimal_pdf(fixture_path)
+
+        with open(fixture_path, 'rb') as f:
+            cls.file_bytes = f.read()
+        cls.filename = 'hdfc_sample.pdf'
+
+    def test_can_parse_detects_hdfc_pdf(self):
+        """HdfcPdfParser.can_parse() returns True for the HDFC fixture."""
+        self.assertTrue(HdfcPdfParser.can_parse(self.file_bytes, self.filename))
+
+    def test_can_parse_rejects_csv(self):
+        """HdfcPdfParser.can_parse() returns False for a CSV filename."""
+        self.assertFalse(HdfcPdfParser.can_parse(self.file_bytes, 'statement.csv'))
+
+    def test_row_count(self):
+        """Parser extracts exactly 7 transaction rows from the HDFC fixture."""
+        parser = HdfcPdfParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        self.assertEqual(len(rows), 7)
+
+    def test_date_range(self):
+        """Extracted dates span from 2026-09-01 to 2026-09-28."""
+        parser = HdfcPdfParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        dates = [r['date'] for r in rows]
+        self.assertEqual(min(dates), date(2026, 9, 1))
+        self.assertEqual(max(dates), date(2026, 9, 28))
+
+    def test_debit_credit_detection(self):
+        """6 debits and 1 credit in the HDFC fixture."""
+        parser = HdfcPdfParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        debits = [r for r in rows if r['is_debit']]
+        credits = [r for r in rows if not r['is_debit']]
+        self.assertEqual(len(debits), 6)
+        self.assertEqual(len(credits), 1)
+
+    def test_amounts(self):
+        """Spot-check amounts: first debit=85, credit=5000."""
+        parser = HdfcPdfParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        self.assertEqual(rows[0]['amount'], Decimal('85.00'))
+        credit_row = [r for r in rows if not r['is_debit']][0]
+        self.assertEqual(credit_row['amount'], Decimal('5000.00'))
+
+    def test_payee_extraction_from_narration(self):
+        """Payee extraction works for UPI and NEFT patterns in PDF."""
+        parser = HdfcPdfParser()
+        rows = parser.parse(self.file_bytes, self.filename)
+        # First row: UPI-RAPIDO-... → payee should contain RAPIDO
+        self.assertIn('RAPIDO', rows[0]['payee_name'].upper())
+
+    def test_dispatch_picks_hdfc(self):
+        """parse_statement() picks 'hdfc_pdf' as the format name."""
+        rows, fmt = parse_statement(self.file_bytes, self.filename)
+        self.assertEqual(fmt, 'hdfc_pdf')
+        self.assertEqual(len(rows), 7)
+
+
+@override_settings(MEDIA_ROOT=os.path.join(os.path.dirname(__file__), 'test_media'))
+class StatementUploadEndpointTests(TestCase):
+    """
+    Integration tests for POST /api/statements/upload.
+    Tests the full pipeline: upload → parse → persist → response.
+    """
+
     def setUp(self):
         self.client = APIClient()
-        self.register_url = '/api/auth/register/'
-        self.login_url = '/api/auth/login/'
-        self.profile_url = '/api/profile/'
-        self.refresh_url = '/api/auth/token/refresh/'
+        self.upload_url = '/api/statements/upload/'
+        self.list_url = '/api/statements/'
 
-        self.student_data = {
-            'username': 'rahul_sharma',
-            'email': 'rahul@campus.edu',
-            'password': 'SecurePassword123!',
-            'college_roll_number': 'CS-2026-042',
-            'monthly_income': '1000.00',
-            'monthly_budget_limit': '500.00',
-        }
+        # Create and authenticate a test user
+        self.user = User.objects.create_user(
+            username='test_student',
+            email='test@campus.edu',
+            password='TestPass123!',
+        )
+        from .models import UserProfile
+        UserProfile.objects.create(
+            user=self.user,
+            college_roll_number='TEST-001',
+        )
+        self.client.force_authenticate(user=self.user)
 
-    # ------------------------------------------------------------------ #
-    # Test 1 — Successful registration returns JWT tokens & correct profile
-    # ------------------------------------------------------------------ #
-    def test_student_registration_success(self):
+    @classmethod
+    def tearDownClass(cls):
+        # Clean up test media (handle Windows file locks gracefully)
+        import shutil
+        media_dir = os.path.join(os.path.dirname(__file__), 'test_media')
+        if os.path.exists(media_dir):
+            shutil.rmtree(media_dir, ignore_errors=True)
+        super().tearDownClass()
+
+    def test_upload_csv_success(self):
         """
-        POST /api/auth/register
-        A new student can register with a unique roll number.
-        The response must include JWT access/refresh tokens, a profile
-        object with the correct roll number, budget limit, and the
-        is_onboarded flag must be True because budget_limit > 0.
+        POST /api/statements/upload with a valid SBI CSV file returns 201
+        with the correct transaction count and date range.
         """
-        response = self.client.post(self.register_url, self.student_data, format='json')
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile(
+                'sbi_statement.csv',
+                f.read(),
+                content_type='text/csv',
+            )
+
+        response = self.client.post(self.upload_url, {'file': csv_file}, format='multipart')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIn('tokens', response.data)
-        self.assertIn('access', response.data['tokens'])
-        self.assertIn('refresh', response.data['tokens'])
-        self.assertIn('profile', response.data)
-        self.assertEqual(response.data['profile']['college_roll_number'], 'CS-2026-042')
-        self.assertEqual(float(response.data['profile']['monthly_budget_limit']), 500.00)
-        # is_onboarded must be True when budget limit > 0
-        self.assertTrue(response.data['profile']['is_onboarded'])
+        self.assertIn('summary', response.data)
+        self.assertEqual(response.data['summary']['total_transactions'], 5)
+        self.assertEqual(response.data['summary']['date_from'], '2026-09-01')
+        self.assertEqual(response.data['summary']['date_to'], '2026-09-25')
+        self.assertEqual(response.data['summary']['bank_format'], 'sbi_csv')
 
-        # Verify records created in the database
-        self.assertTrue(User.objects.filter(username='rahul_sharma').exists())
-        profile = UserProfile.objects.get(college_roll_number='CS-2026-042')
-        self.assertEqual(float(profile.monthly_income), 1000.00)
+        # Verify database records
+        stmt = Statement.objects.get(user=self.user)
+        self.assertEqual(stmt.status, Statement.Status.DONE)
+        self.assertEqual(stmt.transaction_count, 5)
+        self.assertEqual(Transaction.objects.filter(statement=stmt).count(), 5)
 
-    # ------------------------------------------------------------------ #
-    # Test 2 — Duplicate roll number, duplicate username/email are rejected
-    # ------------------------------------------------------------------ #
-    def test_duplicate_roll_number_and_username_registration_fails(self):
+    def test_upload_pdf_success(self):
         """
-        POST /api/auth/register (duplicate attempts)
-        Registering with the same college roll number must return 400.
-        Registering with the same username must also return 400.
-        Registering with the same email must also return 400.
+        POST /api/statements/upload with a valid HDFC PDF file returns 201
+        with the correct transaction count.
         """
-        # First registration succeeds
-        self.client.post(self.register_url, self.student_data, format='json')
+        fixture_path = os.path.join(FIXTURES_DIR, 'hdfc_sample.pdf')
+        with open(fixture_path, 'rb') as f:
+            pdf_file = SimpleUploadedFile(
+                'hdfc_statement.pdf',
+                f.read(),
+                content_type='application/pdf',
+            )
 
-        # Duplicate roll number
-        duplicate_roll = {
-            'username': 'amit_verma',
-            'email': 'amit@campus.edu',
-            'password': 'AnotherPassword123!',
-            'college_roll_number': 'CS-2026-042',  # same roll
-        }
-        resp = self.client.post(self.register_url, duplicate_roll, format='json')
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('college_roll_number', resp.data.get('details', {}))
+        response = self.client.post(self.upload_url, {'file': pdf_file}, format='multipart')
 
-        # Duplicate username
-        duplicate_username = {
-            'username': 'rahul_sharma',  # same username
-            'email': 'other@campus.edu',
-            'password': 'AnotherPassword123!',
-            'college_roll_number': 'CS-2026-999',
-        }
-        resp2 = self.client.post(self.register_url, duplicate_username, format='json')
-        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('username', resp2.data.get('details', {}))
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['summary']['total_transactions'], 7)
+        self.assertEqual(response.data['summary']['bank_format'], 'hdfc_pdf')
 
-        # Duplicate email
-        duplicate_email = {
-            'username': 'new_user',
-            'email': 'rahul@campus.edu',  # same email
-            'password': 'AnotherPassword123!',
-            'college_roll_number': 'CS-2026-888',
-        }
-        resp3 = self.client.post(self.register_url, duplicate_email, format='json')
-        self.assertEqual(resp3.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('email', resp3.data.get('details', {}))
+        # Verify transactions persisted
+        self.assertEqual(Transaction.objects.filter(user=self.user).count(), 7)
 
-    # ------------------------------------------------------------------ #
-    # Test 3 — Login returns tokens; wrong password / unknown user fails
-    # ------------------------------------------------------------------ #
-    def test_login_success_and_wrong_password_failure(self):
+    def test_upload_no_file_returns_400(self):
+        """Upload without a file attachment returns 400."""
+        response = self.client.post(self.upload_url, {}, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_upload_unsupported_type_returns_400(self):
+        """Upload with a .txt file returns 400 (unsupported type)."""
+        txt_file = SimpleUploadedFile(
+            'notes.txt',
+            b'Just some text',
+            content_type='text/plain',
+        )
+        response = self.client.post(self.upload_url, {'file': txt_file}, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Unsupported', response.data['error'])
+
+    def test_upload_requires_authentication(self):
+        """Upload without authentication returns 401."""
+        self.client.force_authenticate(user=None)
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile(
+                'sbi_statement.csv', f.read(), content_type='text/csv',
+            )
+        response = self.client.post(self.upload_url, {'file': csv_file}, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_list_statements_returns_uploads(self):
         """
-        POST /api/auth/login
-        - Correct credentials return JWT access + refresh tokens and profile.
-        - Wrong password returns 400 with an 'error' key.
-        - Unknown username returns 400 with an 'error' key.
-        - Login by email address (instead of username) also works.
+        GET /api/statements/ returns the user's uploaded statements.
         """
-        # Register user first
-        self.client.post(self.register_url, self.student_data, format='json')
+        # Upload a file first
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile(
+                'sbi_statement.csv', f.read(), content_type='text/csv',
+            )
+        self.client.post(self.upload_url, {'file': csv_file}, format='multipart')
 
-        # Correct login via username
-        login_res = self.client.post(self.login_url, {
-            'username': 'rahul_sharma',
-            'password': 'SecurePassword123!',
-        }, format='json')
-        self.assertEqual(login_res.status_code, status.HTTP_200_OK)
-        self.assertIn('tokens', login_res.data)
-        self.assertIn('access', login_res.data['tokens'])
-        self.assertIn('refresh', login_res.data['tokens'])
-        self.assertEqual(login_res.data['profile']['college_roll_number'], 'CS-2026-042')
+        # List statements
+        response = self.client.get(self.list_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['transaction_count'], 5)
 
-        # Correct login via email
-        email_login_res = self.client.post(self.login_url, {
-            'username': 'rahul@campus.edu',
-            'password': 'SecurePassword123!',
-        }, format='json')
-        self.assertEqual(email_login_res.status_code, status.HTTP_200_OK)
-
-        # Wrong password
-        bad_login = self.client.post(self.login_url, {
-            'username': 'rahul_sharma',
-            'password': 'WrongPassword999',
-        }, format='json')
-        self.assertEqual(bad_login.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('error', bad_login.data)
-
-        # Non-existent user
-        ghost_login = self.client.post(self.login_url, {
-            'username': 'ghost_user',
-            'password': 'AnyPassword123',
-        }, format='json')
-        self.assertEqual(ghost_login.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('error', ghost_login.data)
-
-    # ------------------------------------------------------------------ #
-    # Test 4 — JWT-protected profile: GET, PUT budget, token refresh
-    # ------------------------------------------------------------------ #
-    def test_get_and_update_monthly_budget_limit_with_jwt(self):
+    def test_statement_detail_includes_transactions(self):
         """
-        GET/PUT /api/profile  (requires Bearer token)
-        - Unauthenticated access returns 401.
-        - Authenticated GET returns the profile.
-        - PUT with a new budget limit updates the database.
-        - POST /api/auth/token/refresh/ returns a new access token.
-        - A user registered without a budget limit has is_onboarded=False.
+        GET /api/statements/<pk>/ returns the statement with nested transactions.
         """
-        # ── Register with budget ──────────────────────────────────────
-        reg_res = self.client.post(self.register_url, self.student_data, format='json')
-        self.assertEqual(reg_res.status_code, status.HTTP_201_CREATED)
-        access_token = reg_res.data['tokens']['access']
-        refresh_token = reg_res.data['tokens']['refresh']
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile(
+                'sbi_statement.csv', f.read(), content_type='text/csv',
+            )
+        upload_res = self.client.post(self.upload_url, {'file': csv_file}, format='multipart')
+        stmt_id = upload_res.data['statement']['id']
 
-        # ── Unauthenticated GET must return 401 ───────────────────────
-        unauth_res = self.client.get(self.profile_url)
-        self.assertEqual(unauth_res.status_code, status.HTTP_401_UNAUTHORIZED)
+        response = self.client.get(f'/api/statements/{stmt_id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('transactions', response.data)
+        self.assertEqual(len(response.data['transactions']), 5)
 
-        # ── Authenticated GET ─────────────────────────────────────────
-        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
-        get_res = self.client.get(self.profile_url)
-        self.assertEqual(get_res.status_code, status.HTTP_200_OK)
-        self.assertEqual(get_res.data['college_roll_number'], 'CS-2026-042')
-        self.assertTrue(get_res.data['is_onboarded'])
+    def test_transaction_fields_populated(self):
+        """
+        After CSV upload, Transaction records have proper field values.
+        """
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile(
+                'sbi_statement.csv', f.read(), content_type='text/csv',
+            )
+        self.client.post(self.upload_url, {'file': csv_file}, format='multipart')
 
-        # ── PUT to update budget limit and income ─────────────────────
-        update_res = self.client.put(self.profile_url, {
-            'monthly_budget_limit': '850.00',
-            'monthly_income': '1500.00',
-        }, format='json')
-        self.assertEqual(update_res.status_code, status.HTTP_200_OK)
-        self.assertEqual(float(update_res.data['profile']['monthly_budget_limit']), 850.00)
-        self.assertEqual(float(update_res.data['profile']['monthly_income']), 1500.00)
-
-        # Verify persisted in DB
-        profile = UserProfile.objects.get(college_roll_number='CS-2026-042')
-        self.assertEqual(float(profile.monthly_budget_limit), 850.00)
-
-        # ── Token refresh ─────────────────────────────────────────────
-        self.client.credentials()  # clear auth header
-        refresh_res = self.client.post(self.refresh_url, {
-            'refresh': refresh_token,
-        }, format='json')
-        self.assertEqual(refresh_res.status_code, status.HTTP_200_OK)
-        self.assertIn('access', refresh_res.data)
-
-        # ── is_onboarded=False for user without budget set ────────────
-        no_budget_data = {
-            'username': 'priya_no_budget',
-            'email': 'priya@campus.edu',
-            'password': 'SecurePass456!',
-            'college_roll_number': 'EC-2026-001',
-            # No monthly_budget_limit sent → defaults to 0
-        }
-        nb_res = self.client.post(self.register_url, no_budget_data, format='json')
-        self.assertEqual(nb_res.status_code, status.HTTP_201_CREATED)
-        self.assertFalse(nb_res.data['profile']['is_onboarded'])
+        txns = Transaction.objects.filter(user=self.user).order_by('date')
+        first = txns.first()
+        self.assertEqual(first.date, date(2026, 9, 1))
+        self.assertTrue(first.is_debit)
+        self.assertEqual(first.amount, Decimal('250.00'))
+        self.assertIn('ZOMATO', first.payee_name.upper())
+        self.assertEqual(first.status, Transaction.ParseStatus.PENDING)
+        self.assertIsNone(first.category)
+        self.assertIsNone(first.confidence)

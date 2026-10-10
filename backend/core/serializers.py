@@ -121,3 +121,46 @@ class LoginSerializer(serializers.Serializer):
             'access': str(refresh.access_token),
             'refresh': str(refresh),
         }
+
+
+# ── Statement & Transaction serializers ────────────────────────────────────
+
+from .models import Statement, Transaction  # noqa: E402
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transaction
+        fields = [
+            'id', 'date', 'time', 'amount', 'is_debit',
+            'payee_name', 'upi_id', 'remark',
+            'category', 'confidence', 'status', 'created_at',
+        ]
+        read_only_fields = fields
+
+
+class StatementSerializer(serializers.ModelSerializer):
+    transactions = TransactionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Statement
+        fields = [
+            'id', 'original_filename', 'file_type', 'bank_format',
+            'status', 'error_message', 'transaction_count',
+            'date_from', 'date_to', 'uploaded_at', 'processed_at',
+            'transactions',
+        ]
+        read_only_fields = fields
+
+
+class StatementSummarySerializer(serializers.ModelSerializer):
+    """Lightweight version without the full transaction list — used for list views."""
+
+    class Meta:
+        model = Statement
+        fields = [
+            'id', 'original_filename', 'file_type', 'bank_format',
+            'status', 'error_message', 'transaction_count',
+            'date_from', 'date_to', 'uploaded_at', 'processed_at',
+        ]
+        read_only_fields = fields

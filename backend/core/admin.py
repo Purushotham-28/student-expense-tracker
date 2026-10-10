@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import UserProfile
+from .models import UserProfile, Statement, Transaction
 
 
 class UserProfileInline(admin.StackedInline):
@@ -41,3 +41,40 @@ class UserProfileAdmin(admin.ModelAdmin):
 # Re-register User with the custom admin
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)
+
+
+class TransactionInline(admin.TabularInline):
+    model = Transaction
+    extra = 0
+    readonly_fields = (
+        "date", "time", "amount", "is_debit", "payee_name",
+        "upi_id", "remark", "category", "confidence", "status",
+    )
+    fields = readonly_fields
+    show_change_link = True
+
+
+@admin.register(Statement)
+class StatementAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "user", "original_filename", "file_type", "bank_format",
+        "status", "transaction_count", "date_from", "date_to", "uploaded_at",
+    )
+    list_filter = ("status", "file_type", "bank_format", "uploaded_at")
+    search_fields = ("user__username", "original_filename")
+    readonly_fields = ("uploaded_at", "processed_at")
+    ordering = ("-uploaded_at",)
+    inlines = [TransactionInline]
+
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "user", "date", "amount", "is_debit",
+        "payee_name", "category", "status", "created_at",
+    )
+    list_filter = ("is_debit", "status", "date")
+    search_fields = ("payee_name", "upi_id", "remark", "user__username")
+    readonly_fields = ("created_at",)
+    ordering = ("-date", "-created_at")
+

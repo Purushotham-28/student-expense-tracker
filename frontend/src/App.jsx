@@ -18,6 +18,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import BudgetLimitModal from './components/BudgetLimitModal';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import Upload from './pages/Upload';
 import './App.css';
 
 // Initial sample transactions
@@ -66,6 +67,9 @@ function Navigation({ apiStatus, userProfile, onLogout }) {
         <nav className="nav-links">
           <Link to="/" className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} id="nav-dashboard">
             Dashboard
+          </Link>
+          <Link to="/upload" className={`nav-item ${location.pathname === '/upload' ? 'active' : ''}`} id="nav-upload">
+            Upload
           </Link>
           <Link to="/expenses" className={`nav-item ${location.pathname === '/expenses' ? 'active' : ''}`} id="nav-expenses">
             Expenses
@@ -618,6 +622,15 @@ export default function App() {
                       setIsBudgetModalOpen(true);
                     }}
                   />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/upload"
+              element={
+                <ProtectedRoute>
+                  <Upload />
                 </ProtectedRoute>
               }
             />

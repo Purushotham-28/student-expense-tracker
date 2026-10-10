@@ -195,4 +195,41 @@ export const authService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Statement Upload & Listing service
+// ──────────────────────────────────────────────────────────────────────────────
+export const statementService = {
+  /**
+   * Upload a bank statement file (PDF or CSV) for parsing.
+   * Returns the parsed statement summary from the server.
+   */
+  async upload(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await api.post('statements/upload/', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000, // 2 min timeout for large files
+    });
+    return response.data;
+  },
+
+  /**
+   * List the authenticated user's past statement uploads.
+   */
+  async list() {
+    const response = await api.get('statements/');
+    return response.data;
+  },
+
+  /**
+   * Fetch details for a single statement including all transactions.
+   */
+  async detail(statementId) {
+    const response = await api.get(`statements/${statementId}/`);
+    return response.data;
+  },
+};
+
 export default api;
+

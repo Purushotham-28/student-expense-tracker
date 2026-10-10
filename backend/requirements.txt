@@ -8,3 +8,6 @@ pymysql>=1.1.0
 cryptography>=42.0.0
 sqlparse>=0.5.0
 asgiref>=3.9.0
+pdfplumber>=0.11.0
+pandas>=2.2.0
+openpyxl>=3.1.0
