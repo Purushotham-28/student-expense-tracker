@@ -347,9 +347,10 @@ class StatementUploadEndpointTests(TestCase):
         self.assertTrue(first.is_debit)
         self.assertEqual(first.amount, Decimal('250.00'))
         self.assertIn('ZOMATO', first.payee_name.upper())
-        self.assertEqual(first.status, Transaction.ParseStatus.PENDING)
-        self.assertIsNone(first.category)
-        self.assertIsNone(first.confidence)
+        # In Phase 4, uploaded statements auto-categorize and route into confidence status
+        self.assertIn(first.status, [Transaction.ParseStatus.AUTO, Transaction.ParseStatus.VERIFY, Transaction.ParseStatus.PENDING])
+        self.assertIsNotNone(first.category)
+        self.assertIsNotNone(first.confidence)
 
 
 # ── Phase 3 Tests — Hybrid Categorization Engine ──────────────────────────
@@ -455,7 +456,7 @@ class HybridCategorizationEngineTests(TestCase):
         tx.refresh_from_db()
         self.assertEqual(tx.category, ExpenseCategory.FOOD)
         self.assertEqual(tx.confidence, 1.0)
-        self.assertEqual(tx.status, Transaction.ParseStatus.CATEGORISED)
+        self.assertEqual(tx.status, Transaction.ParseStatus.AUTO)
 
     def test_unmapped_transaction_returns_category_and_confidence_between_0_and_1(self):
         """
@@ -483,7 +484,7 @@ class HybridCategorizationEngineTests(TestCase):
         tx.refresh_from_db()
         self.assertEqual(tx.category, category)
         self.assertEqual(tx.confidence, confidence)
-        self.assertEqual(tx.status, Transaction.ParseStatus.CATEGORISED)
+        self.assertIn(tx.status, [Transaction.ParseStatus.AUTO, Transaction.ParseStatus.VERIFY, Transaction.ParseStatus.PENDING])
 
     def test_synthetic_dataset_shape(self):
         """Synthetic dataset has 270 rows covering all 9 categories (30 each)."""
@@ -533,3 +534,195 @@ class HybridCategorizationEngineTests(TestCase):
         self.assertIn("category", res.data)
         self.assertIn("confidence", res.data)
         self.assertGreater(res.data["confidence"], 0)
+
+
+# ── Phase 4 Tests — Confidence Routing & Verification Flow ────────────────
+
+from .services.categorization_service import route_status_from_confidence
+
+
+class ConfidenceRoutingAndVerificationFlowTests(TestCase):
+    """
+    Phase 4 Tests covering:
+      - Confidence-based status routing (auto >= 0.80, verify 0.50-0.80, pending < 0.50)
+      - GET /api/transactions?status=verify|pending|auto|all with pagination & sorting
+      - POST /api/transactions/{id}/confirm upserts PayeeMapping & updates all matching
+        past transactions for that payee.
+      - Statement upload summary banner (auto_count, verify_count, pending_count).
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='student_phase4',
+            password='testpassword123',
+            email='student4@college.edu',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename='sbi_sept.csv',
+            status=Statement.Status.DONE,
+            transaction_count=4,
+        )
+
+    def test_confidence_routing_thresholds(self):
+        """Verify routing helper assigns auto, verify, or pending correctly."""
+        self.assertEqual(route_status_from_confidence(0.95), Transaction.ParseStatus.AUTO)
+        self.assertEqual(route_status_from_confidence(0.80), Transaction.ParseStatus.AUTO)
+        self.assertEqual(route_status_from_confidence(0.79), Transaction.ParseStatus.VERIFY)
+        self.assertEqual(route_status_from_confidence(0.50), Transaction.ParseStatus.VERIFY)
+        self.assertEqual(route_status_from_confidence(0.49), Transaction.ParseStatus.PENDING)
+        self.assertEqual(route_status_from_confidence(0.15), Transaction.ParseStatus.PENDING)
+
+    def test_confirm_category_updates_all_matching_past_transactions_for_payee(self):
+        """
+        Confirming a category updates the target transaction, upserts PayeeMapping,
+        and re-applies that mapping to this user's other transactions with the same
+        payee_key that are still 'verify' or 'pending'.
+        """
+        # Create 3 transactions for the same payee (Swiggy) with various statuses
+        tx1 = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 2),
+            amount=Decimal("210.00"),
+            payee_name="Swiggy Delivery",
+            upi_id="swiggy@icici",
+            status=Transaction.ParseStatus.VERIFY,
+            confidence=0.65,
+        )
+        tx2 = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 10),
+            amount=Decimal("340.00"),
+            payee_name="Swiggy",
+            upi_id="swiggy@icici",
+            status=Transaction.ParseStatus.PENDING,
+            confidence=0.45,
+        )
+        tx3 = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 15),
+            amount=Decimal("180.00"),
+            payee_name="Swiggy Order",
+            upi_id="swiggy@icici",
+            status=Transaction.ParseStatus.VERIFY,
+            confidence=0.72,
+        )
+
+        # Unrelated transaction for Uber — should NOT be updated
+        uber_tx = Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=date(2026, 9, 12),
+            amount=Decimal("150.00"),
+            payee_name="Uber India",
+            upi_id="uber.india@hdfcbank",
+            status=Transaction.ParseStatus.PENDING,
+            confidence=0.40,
+        )
+
+        # Confirm category 'Food' on tx1
+        res = self.client.post(
+            f"/api/transactions/{tx1.pk}/confirm/",
+            {"category": "Food", "apply_to_all": True},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["updated_count"], 3)  # tx1 + tx2 + tx3
+
+        # 1. Target tx1 updated
+        tx1.refresh_from_db()
+        self.assertEqual(tx1.category, "Food")
+        self.assertEqual(tx1.confidence, 1.0)
+        self.assertEqual(tx1.status, Transaction.ParseStatus.AUTO)
+
+        # 2. Other matching transactions tx2 and tx3 updated
+        tx2.refresh_from_db()
+        self.assertEqual(tx2.category, "Food")
+        self.assertEqual(tx2.confidence, 1.0)
+        self.assertEqual(tx2.status, Transaction.ParseStatus.AUTO)
+
+        tx3.refresh_from_db()
+        self.assertEqual(tx3.category, "Food")
+        self.assertEqual(tx3.confidence, 1.0)
+        self.assertEqual(tx3.status, Transaction.ParseStatus.AUTO)
+
+        # 3. PayeeMapping upserted with times_confirmed = 1
+        mapping = PayeeMapping.objects.get(user=self.user, payee_key="swiggy@icici")
+        self.assertEqual(mapping.category, "Food")
+        self.assertEqual(mapping.times_confirmed, 1)
+
+        # 4. Uber transaction remained untouched
+        uber_tx.refresh_from_db()
+        self.assertEqual(uber_tx.status, Transaction.ParseStatus.PENDING)
+        self.assertIsNone(uber_tx.category)
+
+    def test_get_transactions_filtered_by_status(self):
+        """GET /api/transactions?status=pending|verify|auto|all returns filtered results."""
+        # Create transactions with various statuses
+        Transaction.objects.create(
+            statement=self.statement, user=self.user,
+            amount=Decimal("50.00"), payee_name="Chai", status=Transaction.ParseStatus.AUTO,
+        )
+        Transaction.objects.create(
+            statement=self.statement, user=self.user,
+            amount=Decimal("500.00"), payee_name="Unknown 1", status=Transaction.ParseStatus.PENDING,
+        )
+        Transaction.objects.create(
+            statement=self.statement, user=self.user,
+            amount=Decimal("1200.00"), payee_name="Unknown 2", status=Transaction.ParseStatus.PENDING,
+        )
+        Transaction.objects.create(
+            statement=self.statement, user=self.user,
+            amount=Decimal("300.00"), payee_name="Verify 1", status=Transaction.ParseStatus.VERIFY,
+        )
+
+        # Filter: pending
+        res_pending = self.client.get("/api/transactions/?status=pending")
+        self.assertEqual(res_pending.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_pending.data["count"], 2)
+        # Pending is sorted by amount DESCENDING (biggest unknowns first)
+        results = res_pending.data["results"]
+        self.assertEqual(float(results[0]["amount"]), 1200.00)
+        self.assertEqual(float(results[1]["amount"]), 500.00)
+
+        # Filter: verify
+        res_verify = self.client.get("/api/transactions/?status=verify")
+        self.assertEqual(res_verify.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_verify.data["count"], 1)
+
+        # Filter: auto
+        res_auto = self.client.get("/api/transactions/?status=auto")
+        self.assertEqual(res_auto.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_auto.data["count"], 1)
+
+        # Filter: all (checks counts object)
+        res_all = self.client.get("/api/transactions/?status=all")
+        self.assertEqual(res_all.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_all.data["count"], 4)
+        self.assertEqual(res_all.data["counts"]["auto"], 1)
+        self.assertEqual(res_all.data["counts"]["verify"], 1)
+        self.assertEqual(res_all.data["counts"]["pending"], 2)
+
+    def test_upload_response_summary_banner_counts(self):
+        """Upload response contains auto_count, verify_count, and pending_count in summary."""
+        fixture_path = os.path.join(FIXTURES_DIR, 'sbi_sample.csv')
+        with open(fixture_path, 'rb') as f:
+            csv_file = SimpleUploadedFile('sbi_statement.csv', f.read(), content_type='text/csv')
+
+        res = self.client.post("/api/statements/upload/", {'file': csv_file}, format='multipart')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertIn("summary", res.data)
+        summary = res.data["summary"]
+        self.assertIn("auto_count", summary)
+        self.assertIn("verify_count", summary)
+        self.assertIn("pending_count", summary)
+        # Total equals sum of all buckets
+        total = summary["auto_count"] + summary["verify_count"] + summary["pending_count"]
+        self.assertEqual(total, summary["total_transactions"])

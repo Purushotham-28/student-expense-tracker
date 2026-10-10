@@ -410,12 +410,99 @@
   margin-top: 0.1rem;
 }
 
+/* ── Confidence Summary Banner ───────────────────────────────────────────── */
+
+.confidence-summary-banner {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.12));
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md, 0.75rem);
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.1);
+  margin-top: 1rem;
+}
+
+.summary-banner-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.4;
+}
+
+.summary-banner-title strong {
+  color: #818cf8;
+}
+
+.summary-banner-desc {
+  font-size: 0.825rem;
+  color: var(--text-muted, #94a3b8);
+  margin: 0.25rem 0 0;
+}
+
+.summary-banner-pills {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.summary-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.65rem;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.summary-pill.pill-auto {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.summary-pill.pill-verify {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.summary-pill.pill-pending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.btn-review-cta {
+  align-self: flex-start;
+  padding: 0.6rem 1.25rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+  margin-top: 0.25rem;
+}
+
+.btn-review-cta:hover {
+  background: #4f46e5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+}
+
 /* ── Result Actions ─────────────────────────────────────────────────────────── */
 
 .result-actions {
   display: flex;
   gap: 0.75rem;
   justify-content: center;
+  margin-top: 0.75rem;
 }
 
 .result-btn {

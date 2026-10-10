@@ -730,6 +730,21 @@ def get_or_load_model() -> Pipeline:
     return pipeline
 
 
+def route_status_from_confidence(confidence: float) -> str:
+    """
+    Confidence-based status routing:
+      - confidence >= 0.80 -> 'auto'
+      - 0.50 <= confidence < 0.80 -> 'verify'
+      - confidence < 0.50 -> 'pending' (needs student's help)
+    """
+    if confidence >= 0.80:
+        return Transaction.ParseStatus.AUTO
+    elif confidence >= 0.50:
+        return Transaction.ParseStatus.VERIFY
+    else:
+        return Transaction.ParseStatus.PENDING
+
+
 # ---------------------------------------------------------------------------
 # Categorization Service (Per-transaction & Batch)
 # ---------------------------------------------------------------------------
@@ -742,6 +757,10 @@ def categorize_transaction(
     Core hybrid categorizer:
       1. Look up PayeeMapping for this user + payee_key. If found → confidence 1.0.
       2. Otherwise, extract features and run calibrated ML classifier → category + confidence.
+      3. Routes status based on confidence:
+         confidence >= 0.80 -> 'auto'
+         0.50-0.80          -> 'verify'
+         < 0.50             -> 'pending'
 
     Returns:
       (category: str, confidence: float, source: 'payee_mapping' | 'ml_model')
@@ -757,10 +776,11 @@ def categorize_transaction(
         if mapping:
             cat = mapping.category
             conf = 1.0
+            routed_status = route_status_from_confidence(conf)
             if save:
                 transaction.category = cat
                 transaction.confidence = conf
-                transaction.status = Transaction.ParseStatus.CATEGORISED
+                transaction.status = routed_status
                 transaction.save(update_fields=["category", "confidence", "status"])
             return cat, conf, "payee_mapping"
 
@@ -781,11 +801,12 @@ def categorize_transaction(
 
     # Keep confidence bounded [0.0, 1.0] and rounded
     confidence = round(max(0.01, min(1.0, confidence)), 4)
+    routed_status = route_status_from_confidence(confidence)
 
     if save:
         transaction.category = pred_category
         transaction.confidence = confidence
-        transaction.status = Transaction.ParseStatus.CATEGORISED
+        transaction.status = routed_status
         transaction.save(update_fields=["category", "confidence", "status"])
 
     return pred_category, confidence, "ml_model"

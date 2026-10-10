@@ -19,6 +19,7 @@ import BudgetLimitModal from './components/BudgetLimitModal';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Upload from './pages/Upload';
+import Verify from './pages/Verify';
 import './App.css';
 
 // Initial sample transactions
@@ -70,6 +71,9 @@ function Navigation({ apiStatus, userProfile, onLogout }) {
           </Link>
           <Link to="/upload" className={`nav-item ${location.pathname === '/upload' ? 'active' : ''}`} id="nav-upload">
             Upload
+          </Link>
+          <Link to="/verify" className={`nav-item ${location.pathname === '/verify' ? 'active' : ''}`} id="nav-verify">
+            Review
           </Link>
           <Link to="/expenses" className={`nav-item ${location.pathname === '/expenses' ? 'active' : ''}`} id="nav-expenses">
             Expenses
@@ -631,6 +635,15 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Upload />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/verify"
+              element={
+                <ProtectedRoute>
+                  <Verify />
                 </ProtectedRoute>
               }
             />

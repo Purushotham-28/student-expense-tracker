@@ -284,6 +284,43 @@ export default function Upload() {
               </div>
             </div>
 
+            {/* Results summary banner */}
+            {result.summary && (
+              <div className="confidence-summary-banner" id="confidence-summary-banner">
+                <div className="summary-banner-content">
+                  <div className="summary-banner-title">
+                    ✨ <strong>{result.summary.auto_count ?? 0} auto-categorized</strong>,{' '}
+                    <strong>{result.summary.verify_count ?? 0} to verify</strong>,{' '}
+                    <strong>{result.summary.pending_count ?? 0} need your help</strong>
+                  </div>
+                  <p className="summary-banner-desc">
+                    Transactions have been routed by confidence. Review uncertain items to personalize future categorizations.
+                  </p>
+                </div>
+                <div className="summary-banner-pills">
+                  <span className="summary-pill pill-auto">
+                    ● {result.summary.auto_count ?? 0} Auto (&ge;80%)
+                  </span>
+                  <span className="summary-pill pill-verify">
+                    ● {result.summary.verify_count ?? 0} To Verify (50-80%)
+                  </span>
+                  <span className="summary-pill pill-pending">
+                    ● {result.summary.pending_count ?? 0} Need Help (&lt;50%)
+                  </span>
+                </div>
+                {((result.summary.verify_count ?? 0) + (result.summary.pending_count ?? 0)) > 0 && (
+                  <button
+                    type="button"
+                    className="btn-review-cta"
+                    onClick={() => navigate('/verify')}
+                    id="btn-review-uncertain-txns"
+                  >
+                    Review {(result.summary.verify_count ?? 0) + (result.summary.pending_count ?? 0)} Transactions Now →
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="result-actions">
               <button
                 type="button"

@@ -155,11 +155,18 @@ def upload_statement(request):
             'statement_id': stmt.pk,
         }, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
+    auto_count = stmt.transactions.filter(status=Transaction.ParseStatus.AUTO).count()
+    verify_count = stmt.transactions.filter(status=Transaction.ParseStatus.VERIFY).count()
+    pending_count = stmt.transactions.filter(status=Transaction.ParseStatus.PENDING).count()
+
     return Response({
         'message': f'Successfully parsed {stmt.transaction_count} transaction(s).',
         'statement': StatementSummarySerializer(stmt).data,
         'summary': {
             'total_transactions': stmt.transaction_count,
+            'auto_count': auto_count,
+            'verify_count': verify_count,
+            'pending_count': pending_count,
             'date_from': str(stmt.date_from) if stmt.date_from else None,
             'date_to':   str(stmt.date_to)   if stmt.date_to   else None,
             'bank_format': stmt.bank_format,
@@ -294,3 +301,140 @@ def categorize_statement_view(request, pk):
         'categorized_count': len(results),
         'results': results,
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_transactions_view(request):
+    """
+    GET /api/transactions?status=verify|pending|auto|all&page=1&page_size=20
+    Filters transactions by status, with pagination.
+    Sorted by amount descending within 'pending' so biggest unknowns show first.
+    """
+    status_filter = request.query_params.get('status', 'all').lower().strip()
+    user_txs = Transaction.objects.filter(user=request.user)
+
+    # Global breakdown counts for the user
+    counts = {
+        'all': user_txs.count(),
+        'auto': user_txs.filter(status=Transaction.ParseStatus.AUTO).count(),
+        'verify': user_txs.filter(status=Transaction.ParseStatus.VERIFY).count(),
+        'pending': user_txs.filter(status=Transaction.ParseStatus.PENDING).count(),
+    }
+
+    # Apply status filter
+    if status_filter in ['auto', 'verify', 'pending']:
+        queryset = user_txs.filter(status=status_filter)
+    else:
+        queryset = user_txs
+
+    # Sorting: within pending, biggest unknowns show first
+    if status_filter == 'pending':
+        queryset = queryset.order_by('-amount', '-date', '-id')
+    else:
+        queryset = queryset.order_by('-date', '-id')
+
+    # Pagination
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (ValueError, TypeError):
+        page = 1
+
+    try:
+        page_size = min(100, max(1, int(request.query_params.get('page_size', 20))))
+    except (ValueError, TypeError):
+        page_size = 20
+
+    total_count = queryset.count()
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = queryset[start:end]
+
+    total_pages = max(1, (total_count + page_size - 1) // page_size) if total_count > 0 else 1
+
+    return Response({
+        'count': total_count,
+        'total_pages': total_pages,
+        'current_page': page,
+        'page_size': page_size,
+        'counts': counts,
+        'results': TransactionSerializer(page_items, many=True).data,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def confirm_transaction_view(request, pk):
+    """
+    POST /api/transactions/{id}/confirm
+    Body: { "category": "Food", "apply_to_all": true }
+    Action:
+      1. Updates the transaction (status="auto", confidence=1.0, category=category).
+      2. Upserts PayeeMapping for this user + payee_key (increment times_confirmed).
+      3. Re-applies that mapping to other transactions from this user with the same
+         payee_key that are still "verify" or "pending".
+    """
+    try:
+        tx = Transaction.objects.get(pk=pk, user=request.user)
+    except Transaction.DoesNotExist:
+        return Response({'error': 'Transaction not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    category = request.data.get('category')
+    if not category or category not in CATEGORIES:
+        return Response(
+            {'error': f"Valid category is required. Must be one of: {CATEGORIES}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    apply_to_all = request.data.get('apply_to_all', True)
+    if isinstance(apply_to_all, str):
+        apply_to_all = apply_to_all.lower() in ('true', '1', 'yes')
+
+    # 1 — Update current transaction
+    tx.category = category
+    tx.confidence = 1.0
+    tx.status = Transaction.ParseStatus.AUTO
+    tx.save(update_fields=['category', 'confidence', 'status'])
+
+    # 2 — Upsert PayeeMapping
+    payee_key = normalize_payee(tx.payee_name, tx.upi_id)
+    mapping = None
+    if payee_key:
+        mapping, created = PayeeMapping.objects.get_or_create(
+            user=request.user,
+            payee_key=payee_key,
+            defaults={'category': category, 'times_confirmed': 1},
+        )
+        if not created:
+            mapping.category = category
+            mapping.times_confirmed += 1
+            mapping.save(update_fields=['category', 'times_confirmed', 'updated_at'])
+
+    # 3 — Re-apply to other 'verify' or 'pending' transactions for this user
+    updated_others_count = 0
+    if apply_to_all and payee_key:
+        pending_or_verify = Transaction.objects.filter(
+            user=request.user,
+            status__in=[Transaction.ParseStatus.VERIFY, Transaction.ParseStatus.PENDING],
+        ).exclude(pk=tx.pk)
+
+        matching_ids = []
+        for other in pending_or_verify:
+            if normalize_payee(other.payee_name, other.upi_id) == payee_key:
+                matching_ids.append(other.pk)
+
+        if matching_ids:
+            updated_others_count = Transaction.objects.filter(pk__in=matching_ids).update(
+                category=category,
+                confidence=1.0,
+                status=Transaction.ParseStatus.AUTO,
+            )
+
+    return Response({
+        'message': f"Confirmed category '{category}'. Applied to {updated_others_count + 1} transaction(s).",
+        'transaction': TransactionSerializer(tx).data,
+        'mapping': PayeeMappingSerializer(mapping).data if mapping else None,
+        'payee_key': payee_key,
+        'times_confirmed': mapping.times_confirmed if mapping else 1,
+        'updated_count': updated_others_count + 1,
+    }, status=status.HTTP_200_OK)

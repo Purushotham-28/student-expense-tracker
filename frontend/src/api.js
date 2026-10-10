@@ -231,5 +231,42 @@ export const statementService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Transaction & Verification Service
+// ──────────────────────────────────────────────────────────────────────────────
+export const transactionService = {
+  /**
+   * List transactions with status filter ('verify', 'pending', 'auto', 'all')
+   * and pagination.
+   */
+  async list({ status = 'all', page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (page) params.append('page', page);
+    if (pageSize) params.append('page_size', pageSize);
+    const response = await api.get(`transactions/?${params.toString()}`);
+    return response.data;
+  },
+
+  /**
+   * Confirm category for a transaction and upsert PayeeMapping.
+   */
+  async confirm(id, { category, applyToAll = true }) {
+    const response = await api.post(`transactions/${id}/confirm/`, {
+      category,
+      apply_to_all: applyToAll,
+    });
+    return response.data;
+  },
+
+  /**
+   * Re-run hybrid categorization on a transaction.
+   */
+  async categorize(id) {
+    const response = await api.post(`transactions/${id}/categorize/`);
+    return response.data;
+  },
+};
+
 export default api;
 

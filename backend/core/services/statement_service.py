@@ -95,7 +95,15 @@ def process_uploaded_statement(
         ]
         Transaction.objects.bulk_create(tx_objects, batch_size=500)
 
-        # 5 — Compute date range from rows
+        # 5 — Run hybrid categorization on each transaction
+        from .categorization_service import categorize_transaction
+        for tx in stmt.transactions.all():
+            try:
+                categorize_transaction(tx, save=True)
+            except Exception as cat_err:
+                logger.warning("Failed auto-categorizing transaction %s: %s", tx.pk, cat_err)
+
+        # 6 — Compute date range from rows
         dates = [r["date"] for r in rows if r.get("date")]
         date_from = min(dates) if dates else None
         date_to   = max(dates) if dates else None

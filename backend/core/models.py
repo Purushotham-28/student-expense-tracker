@@ -70,6 +70,8 @@ class Transaction(models.Model):
     """
 
     class ParseStatus(models.TextChoices):
+        AUTO = "auto", "Auto"
+        VERIFY = "verify", "Verify"
         PENDING = "pending", "Pending"
         CATEGORISED = "categorised", "Categorised"
         IGNORED = "ignored", "Ignored"
@@ -92,7 +94,7 @@ class Transaction(models.Model):
     remark = models.CharField(max_length=512, blank=True)
     raw_text = models.TextField(blank=True)
 
-    # AI-categorisation fields (populated in Phase 3)
+    # AI-categorisation fields (populated in Phase 3 & 4)
     category = models.CharField(max_length=100, blank=True, null=True)
     confidence = models.FloatField(null=True, blank=True)
     status = models.CharField(

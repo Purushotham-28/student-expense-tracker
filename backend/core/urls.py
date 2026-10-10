@@ -11,6 +11,8 @@ from .views import (
     categorize_statement_view,
     payee_mappings_view,
     categorize_transaction_view,
+    list_transactions_view,
+    confirm_transaction_view,
 )
 
 urlpatterns = [
@@ -32,5 +34,7 @@ urlpatterns = [
 
     # Payee Mappings & Categorization
     re_path(r'^payee-mappings/?$', payee_mappings_view, name='payee_mappings'),
+    re_path(r'^transactions/?$', list_transactions_view, name='transaction_list'),
     re_path(r'^transactions/(?P<pk>\d+)/categorize/?$', categorize_transaction_view, name='transaction_categorize'),
+    re_path(r'^transactions/(?P<pk>\d+)/confirm/?$', confirm_transaction_view, name='transaction_confirm'),
 ]
