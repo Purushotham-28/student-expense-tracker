@@ -12,6 +12,7 @@ from typing import IO, List, Tuple
 from .base import NormRow, get_registry
 
 # Import parsers in priority order (specific before generic)
+from . import phonepe_pdf       # noqa: F401  — registers PhonePePdfParser
 from . import hdfc_pdf          # noqa: F401  — registers HdfcPdfParser
 from . import sbi_csv           # noqa: F401  — registers SbiCsvParser
 from . import generic_csv       # noqa: F401  — registers GenericCsvParser

@@ -16,6 +16,7 @@ from .models import Statement, Transaction, UserProfile, Goal, ChatMessage
 from .parsers import parse_statement
 from .parsers.sbi_csv import SbiCsvParser
 from .parsers.hdfc_pdf import HdfcPdfParser
+from .parsers.phonepe_pdf import PhonePePdfParser
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
@@ -183,7 +184,31 @@ class HdfcPdfParserTests(TestCase):
         self.assertEqual(len(rows), 7)
 
 
+class PhonePePdfParserTests(TestCase):
+    """
+    Tests for the PhonePe UPI PDF parser.
+    """
+
+    def test_can_parse_detects_phonepe_filename(self):
+        self.assertTrue(PhonePePdfParser.can_parse(b'%PDF-dummy', 'PhonePe_Statement_Oct2025.pdf'))
+        self.assertFalse(PhonePePdfParser.can_parse(b'%PDF-dummy', 'statement.csv'))
+
+    def test_can_parse_detects_phonepe_identifiers_in_bytes(self):
+        sample_path = os.path.join(os.path.dirname(__file__), '..', 'media', 'statements', '2', 'PhonePe_Statement_Oct2025_Oct2026.pdf')
+        if os.path.exists(sample_path):
+            with open(sample_path, 'rb') as f:
+                data = f.read()
+            self.assertTrue(PhonePePdfParser.can_parse(data, 'statement.pdf'))
+            rows, fmt = parse_statement(data, 'statement.pdf')
+            self.assertEqual(fmt, 'phonepe_pdf')
+            self.assertEqual(len(rows), 45)
+            self.assertEqual(rows[0]['payee_name'], 'MEENAMARAKATHAMI')
+            self.assertEqual(rows[0]['amount'], Decimal('1000'))
+            self.assertFalse(rows[0]['is_debit'])  # Credit
+
+
 @override_settings(MEDIA_ROOT=os.path.join(os.path.dirname(__file__), 'test_media'))
+
 class StatementUploadEndpointTests(TestCase):
     """
     Integration tests for POST /api/statements/upload.
