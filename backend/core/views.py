@@ -715,3 +715,25 @@ def chat_history_view(request):
 
     messages = ChatMessage.objects.filter(user=request.user).order_by('created_at')
     return Response(ChatMessageSerializer(messages, many=True).data, status=status.HTTP_200_OK)
+
+
+# ── Phase 9 — Dashboard Summary & Analytics ─────────────────────────────────
+
+from .services.dashboard_service import get_dashboard_summary  # noqa: E402
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dashboard_summary_view(request):
+    """
+    GET /api/dashboard/summary/
+    Unified demo-ready dashboard summary:
+      - Budget vs actual this month
+      - Category breakdown & active budget alerts (80% and 100% caps)
+      - Runway forecast & burn rate
+      - Goals progress & velocity alert
+      - Financial Health score card
+      - Verification pipeline status & recent transactions
+    """
+    data = get_dashboard_summary(request.user)
+    return Response(data, status=status.HTTP_200_OK)

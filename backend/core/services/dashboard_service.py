@@ -1,0 +1,298 @@
+"""
+dashboard_service.py — Aggregates all Phase 1-8 domain services into a unified,
+demo-ready dashboard summary for the student.
+
+Computes:
+1. Budget vs Actual this month (allowance, spent, remaining, % consumed, burn rate)
+2. Category Breakdown with budget shares, percentages, and icons
+3. Budget Alerts: triggered when any category crosses 80% or 100% of its budget share
+4. Cash-Flow Runway summary (runway date, days, burn rate, forecast series)
+5. Goals Progress & adaptive weekly savings velocity
+6. Financial Health Score (0-100 gauge with sub-scores & tips)
+7. Recent transactions & verification pipeline status counts
+"""
+
+from datetime import date, datetime
+import calendar
+from decimal import Decimal
+from typing import Dict, Any, List
+
+from django.contrib.auth.models import User
+from django.db.models import Sum
+
+from ..models import Transaction, Goal, UserProfile
+from .forecasting_service import calculate_cash_flow_runway
+from .goal_service import check_goal_progress_and_suggest_cut
+from .health_score_service import get_user_financial_health_score
+from .categorization_service import CATEGORIES
+
+# Default campus budget share distribution per category
+CATEGORY_BENCHMARK_SHARES = {
+    'Food': 0.30,               # 30% of monthly budget
+    'Rent/Hostel': 0.25,        # 25%
+    'Groceries/Shopping': 0.15, # 15%
+    'Travel': 0.10,             # 10%
+    'Entertainment': 0.08,      # 8%
+    'Academics': 0.08,          # 8%
+    'Subscriptions': 0.04,      # 4%
+    'Friend/Split': 0.05,       # 5%
+    'Other': 0.05,              # 5%
+}
+
+CATEGORY_METADATA = {
+    'Food': {'icon': '🍔', 'color': '#f59e0b'},
+    'Travel': {'icon': '🚗', 'color': '#3b82f6'},
+    'Groceries/Shopping': {'icon': '🛒', 'color': '#10b981'},
+    'Subscriptions': {'icon': '📺', 'color': '#8b5cf6'},
+    'Rent/Hostel': {'icon': '🏠', 'color': '#ef4444'},
+    'Academics': {'icon': '📚', 'color': '#06b6d4'},
+    'Friend/Split': {'icon': '👥', 'color': '#ec4899'},
+    'Entertainment': {'icon': '🎬', 'color': '#f97316'},
+    'Other': {'icon': '🏷️', 'color': '#64748b'},
+}
+
+
+def get_dashboard_summary(user: User) -> Dict[str, Any]:
+    """
+    Builds the complete dashboard summary payload for a student user.
+    """
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'college_roll_number': f'ROLL-{user.id}', 'monthly_budget_limit': 15000.0},
+    )
+
+    today = date.today()
+    start_of_month = date(today.year, today.month, 1)
+    _, days_in_month = calendar.monthrange(today.year, today.month)
+    days_passed = max(1, today.day)
+    days_remaining = max(0, days_in_month - today.day)
+
+    # 1. Transactions & Budget vs Actual this month
+    all_user_txs = Transaction.objects.filter(user=user)
+    month_txs = all_user_txs.filter(
+        is_debit=True,
+        date__gte=start_of_month,
+        date__lte=today,
+    )
+
+    monthly_budget_limit = float(profile.monthly_budget_limit or 15000.0)
+    monthly_income = float(profile.monthly_income or 0.0)
+
+    total_spent_month = float(month_txs.aggregate(s=Sum('amount'))['s'] or 0.0)
+    remaining_budget = max(0.0, monthly_budget_limit - total_spent_month)
+    percent_budget_used = round((total_spent_month / monthly_budget_limit * 100), 1) if monthly_budget_limit > 0 else 0.0
+
+    daily_burn_rate_month = round(total_spent_month / days_passed, 2)
+    daily_budget_allowance = round(remaining_budget / max(1, days_remaining), 2) if days_remaining > 0 else 0.0
+
+    # 2. Category Breakdown & Budget Alerts
+    category_totals = {}
+    for tx in month_txs:
+        cat = tx.category or 'Other'
+        category_totals[cat] = category_totals.get(cat, 0.0) + float(tx.amount)
+
+    category_breakdown = []
+    budget_alerts = []
+
+    # Iterate through all known categories
+    for cat in CATEGORIES:
+        spent = round(category_totals.get(cat, 0.0), 2)
+        share_weight = CATEGORY_BENCHMARK_SHARES.get(cat, 0.05)
+        cat_budget = round(monthly_budget_limit * share_weight, 2)
+        share_percent_used = round((spent / cat_budget * 100), 1) if cat_budget > 0 else 0.0
+        pct_of_total_spend = round((spent / total_spent_month * 100), 1) if total_spent_month > 0 else 0.0
+
+        meta = CATEGORY_METADATA.get(cat, {'icon': '🏷️', 'color': '#64748b'})
+
+        cat_item = {
+            'category': cat,
+            'spent': spent,
+            'budget': cat_budget,
+            'percent_used': share_percent_used,
+            'percent_of_total': pct_of_total_spend,
+            'icon': meta['icon'],
+            'color': meta['color'],
+            'is_warning_80': share_percent_used >= 80.0,
+            'is_exceeded_100': share_percent_used >= 100.0,
+        }
+        category_breakdown.append(cat_item)
+
+        # Budget Alert generation (crosses 80% or 100% of category share)
+        if spent > 0:
+            if share_percent_used >= 100.0:
+                budget_alerts.append({
+                    'id': f"alert-exceeded-{cat.lower()}",
+                    'severity': 'danger',
+                    'level': 100,
+                    'category': cat,
+                    'icon': meta['icon'],
+                    'spent': spent,
+                    'budget': cat_budget,
+                    'percent': share_percent_used,
+                    'title': f"{cat} Budget Exceeded (100%+)",
+                    'message': f"You have spent ₹{spent:,.2f} on {cat}, exceeding the ₹{cat_budget:,.2f} allocated monthly budget limit ({share_percent_used}%).",
+                })
+            elif share_percent_used >= 80.0:
+                budget_alerts.append({
+                    'id': f"alert-warning-{cat.lower()}",
+                    'severity': 'warning',
+                    'level': 80,
+                    'category': cat,
+                    'icon': meta['icon'],
+                    'spent': spent,
+                    'budget': cat_budget,
+                    'percent': share_percent_used,
+                    'title': f"{cat} Approaching Budget Cap (80%+)",
+                    'message': f"You have reached {share_percent_used}% of your monthly {cat} budget (₹{spent:,.2f} of ₹{cat_budget:,.2f}). Consider slowing down.",
+                })
+
+    # Sort categories by spent descending
+    category_breakdown.sort(key=lambda x: x['spent'], reverse=True)
+
+    # 3. Overall Monthly Budget Alert if overall budget crossed 80% or 100%
+    if percent_budget_used >= 100.0:
+        budget_alerts.insert(0, {
+            'id': 'alert-overall-exceeded',
+            'severity': 'danger',
+            'level': 100,
+            'category': 'Total Budget',
+            'icon': '🚨',
+            'spent': total_spent_month,
+            'budget': monthly_budget_limit,
+            'percent': percent_budget_used,
+            'title': 'Monthly Budget Exceeded!',
+            'message': f"Total monthly expenditure (₹{total_spent_month:,.2f}) has passed your ₹{monthly_budget_limit:,.2f} limit ({percent_budget_used}% consumed).",
+        })
+    elif percent_budget_used >= 80.0:
+        budget_alerts.insert(0, {
+            'id': 'alert-overall-warning',
+            'severity': 'warning',
+            'level': 80,
+            'category': 'Total Budget',
+            'icon': '⚠️',
+            'spent': total_spent_month,
+            'budget': monthly_budget_limit,
+            'percent': percent_budget_used,
+            'title': 'Overall Budget Warning (80%+ Consumed)',
+            'message': f"You have spent {percent_budget_used}% of your total semester budget (₹{total_spent_month:,.2f} / ₹{monthly_budget_limit:,.2f}) with {days_remaining} days left in the month.",
+        })
+
+    # 4. Runway Summary
+    try:
+        runway_info = calculate_cash_flow_runway(user)
+    except Exception as e:
+        runway_info = {
+            'runway_date': None,
+            'runway_days': 30,
+            'is_exhausted': False,
+            'daily_burn_rate': daily_burn_rate_month or 150.0,
+            'forecast_series': [],
+            'error': str(e),
+        }
+
+    # 5. Goals Summary
+    goals_qs = Goal.objects.filter(user=user)
+    active_goals = [g for g in goals_qs if g.status == Goal.Status.ACTIVE]
+    goals_summary_list = []
+    for g in goals_qs[:4]:
+        target = float(g.target_amount)
+        saved = float(g.saved_so_far)
+        pct = round((saved / target * 100), 1) if target > 0 else 0.0
+        goals_summary_list.append({
+            'id': g.id,
+            'name': g.name,
+            'target_amount': target,
+            'saved_so_far': saved,
+            'progress_percent': pct,
+            'deadline': g.deadline.isoformat(),
+            'weekly_target': g.weekly_target,
+            'status': g.status,
+            'is_done': g.status == Goal.Status.DONE,
+        })
+
+    try:
+        goal_eval = check_goal_progress_and_suggest_cut(user)
+    except Exception:
+        goal_eval = {'has_active_goals': bool(active_goals), 'is_behind': False}
+
+    # 6. Financial Health Score Summary
+    try:
+        health_info = get_user_financial_health_score(user)
+    except Exception as e:
+        health_info = {
+            'health_score': 75,
+            'rating': 'Good',
+            'sub_scores': {'savings_rate': 28, 'budget_adherence': 24, 'volatility': 23},
+            'tips': ['Keep tracking your expenses to build accurate financial score history.'],
+            'error': str(e),
+        }
+
+    # 7. Verification pipeline & transaction counts
+    counts = {
+        'all': all_user_txs.count(),
+        'auto': all_user_txs.filter(status=Transaction.ParseStatus.AUTO).count(),
+        'verify': all_user_txs.filter(status=Transaction.ParseStatus.VERIFY).count(),
+        'pending': all_user_txs.filter(status=Transaction.ParseStatus.PENDING).count(),
+    }
+
+    # Recent transactions (top 8)
+    recent_qs = all_user_txs.order_by('-date', '-id')[:8]
+    recent_transactions = []
+    for t in recent_qs:
+        recent_transactions.append({
+            'id': t.id,
+            'date': t.date.isoformat(),
+            'amount': float(t.amount),
+            'payee_name': t.payee_name or 'Unknown Payee',
+            'upi_id': t.upi_id,
+            'remark': t.remark or '',
+            'category': t.category or 'Other',
+            'confidence': float(t.confidence) if t.confidence is not None else None,
+            'status': t.status,
+            'is_debit': t.is_debit,
+        })
+
+    return {
+        'user': {
+            'username': user.username,
+            'email': user.email,
+            'college_roll_number': profile.college_roll_number,
+            'monthly_budget_limit': monthly_budget_limit,
+            'monthly_income': monthly_income,
+            'is_onboarded': bool(profile.monthly_budget_limit and profile.monthly_budget_limit > 0),
+        },
+        'budget': {
+            'monthly_limit': monthly_budget_limit,
+            'monthly_income': monthly_income,
+            'total_spent_month': total_spent_month,
+            'remaining_budget': remaining_budget,
+            'percent_used': percent_budget_used,
+            'days_in_month': days_in_month,
+            'days_passed': days_passed,
+            'days_remaining': days_remaining,
+            'daily_burn_rate': daily_burn_rate_month,
+            'daily_allowance_remaining': daily_budget_allowance,
+        },
+        'category_breakdown': category_breakdown,
+        'budget_alerts': budget_alerts,
+        'runway': {
+            'runway_date': runway_info.get('runway_date'),
+            'runway_days': runway_info.get('runway_days'),
+            'is_exhausted': runway_info.get('is_exhausted', False),
+            'daily_burn_rate': runway_info.get('daily_burn_rate'),
+            'current_balance': runway_info.get('current_balance'),
+            'forecast_series': runway_info.get('forecast_series', [])[:35],
+            'method': runway_info.get('method', 'baseline'),
+        },
+        'goals': {
+            'items': goals_summary_list,
+            'total_active': len(active_goals),
+            'evaluation': goal_eval,
+        },
+        'health_score': health_info,
+        'transactions_summary': {
+            'counts': counts,
+            'recent': recent_transactions,
+            'needs_review_count': counts['verify'] + counts['pending'],
+        },
+    }

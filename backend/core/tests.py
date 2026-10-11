@@ -1382,3 +1382,99 @@ class AIChatboxFunctionCallingTests(TestCase):
         del_res = self.client.delete("/api/chat/history/")
         self.assertEqual(del_res.status_code, status.HTTP_200_OK)
         self.assertEqual(ChatMessage.objects.filter(user=self.user).count(), 0)
+
+
+class UnifiedDashboardSummaryTests(TestCase):
+    """
+    Phase 9 Tests: Unified Dashboard Summary & Budget Alerts Engine
+    - Budget vs actual calculation for current month
+    - Category breakdown with benchmark allocations
+    - 80% and 100% budget alert generation
+    - Integration with Runway, Goals, and Health Score services
+    - GET /api/dashboard/summary/ endpoint
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='student_phase9',
+            password='testpassword123',
+            email='student9@campus.edu',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.profile, _ = UserProfile.objects.get_or_create(
+            user=self.user,
+            defaults={'college_roll_number': 'ROLL-PHASE9'},
+        )
+        self.profile.monthly_budget_limit = Decimal("10000.00")
+        self.profile.monthly_income = Decimal("20000.00")
+        self.profile.save()
+
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename="october_test.csv",
+            status=Statement.Status.DONE,
+            transaction_count=5,
+        )
+
+    def test_dashboard_summary_empty_state(self):
+        """User with no transactions receives healthy empty state."""
+        res = self.client.get("/api/dashboard/summary/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.data
+        self.assertEqual(data['budget']['total_spent_month'], 0.0)
+        self.assertEqual(data['budget']['monthly_limit'], 10000.0)
+        self.assertEqual(data['budget']['remaining_budget'], 10000.0)
+        self.assertEqual(len(data['budget_alerts']), 0)
+        self.assertIn('runway', data)
+        self.assertIn('goals', data)
+        self.assertIn('health_score', data)
+
+    def test_dashboard_summary_80_percent_category_alert(self):
+        """
+        Food budget is 30% of Rs. 10,000 = Rs. 3,000.
+        Spending Rs. 2,550 on Food (85% of share) triggers an 80%+ budget alert.
+        """
+        today = date.today()
+        Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=today,
+            amount=Decimal("2550.00"),
+            is_debit=True,
+            payee_name="Swiggy",
+            category="Food",
+            status=Transaction.ParseStatus.AUTO,
+        )
+
+        res = self.client.get("/api/dashboard/summary/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        alerts = res.data['budget_alerts']
+        self.assertTrue(any(a['category'] == 'Food' and a['level'] == 80 for a in alerts))
+
+    def test_dashboard_summary_100_percent_exceeded_alert(self):
+        """
+        Entertainment budget is 8% of Rs. 10,000 = Rs. 800.
+        Spending Rs. 950 on Entertainment (118% of share) triggers a 100%+ danger alert.
+        """
+        today = date.today()
+        Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=today,
+            amount=Decimal("950.00"),
+            is_debit=True,
+            payee_name="PVR Cinemas",
+            category="Entertainment",
+            status=Transaction.ParseStatus.AUTO,
+        )
+
+        res = self.client.get("/api/dashboard/summary/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        alerts = res.data['budget_alerts']
+        exceeded = [a for a in alerts if a['category'] == 'Entertainment']
+        self.assertTrue(len(exceeded) > 0)
+        self.assertEqual(exceeded[0]['level'], 100)
+        self.assertEqual(exceeded[0]['severity'], 'danger')
+

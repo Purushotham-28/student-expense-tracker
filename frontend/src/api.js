@@ -406,5 +406,25 @@ export const chatService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 9 — Unified Dashboard Service
+// ──────────────────────────────────────────────────────────────────────────────
+export const dashboardService = {
+  /**
+   * Fetch complete demo-ready dashboard summary:
+   *  - Budget vs actual this month
+   *  - Category breakdown & budget alerts (80% and 100% caps)
+   *  - Runway forecast & daily burn rate
+   *  - Goals progress & velocity check
+   *  - Financial Health score card
+   *  - Recent transactions & verification pipeline
+   */
+  async getSummary() {
+    const response = await api.get('dashboard/summary/');
+    return response.data;
+  },
+};
+
 export default api;
+
 

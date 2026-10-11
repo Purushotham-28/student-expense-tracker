@@ -22,6 +22,7 @@ from .views import (
     health_score_view,
     chat_view,
     chat_history_view,
+    dashboard_summary_view,
 )
 
 urlpatterns = [
@@ -34,6 +35,9 @@ urlpatterns = [
 
     # Profile
     re_path(r'^profile/?$', user_profile_view, name='user_profile'),
+
+    # Phase 9 — Dashboard Summary
+    re_path(r'^dashboard/summary/?$', dashboard_summary_view, name='dashboard_summary'),
 
     # Statements
     re_path(r'^statements/upload/?$', upload_statement, name='statement_upload'),
@@ -63,3 +67,4 @@ urlpatterns = [
     re_path(r'^chat/?$', chat_view, name='chat'),
     re_path(r'^chat/history/?$', chat_history_view, name='chat_history'),
 ]
+

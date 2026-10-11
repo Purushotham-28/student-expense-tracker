@@ -38,6 +38,12 @@ from .chat_service import (
     CLAUDE_TOOLS,
 )
 
+from .dashboard_service import (
+    get_dashboard_summary,
+    CATEGORY_BENCHMARK_SHARES,
+    CATEGORY_METADATA,
+)
+
 __all__ = [
     "process_uploaded_statement",
     "validate_upload",
@@ -64,4 +70,8 @@ __all__ = [
     "process_chat_message",
     "execute_chat_tool",
     "CLAUDE_TOOLS",
+    "get_dashboard_summary",
+    "CATEGORY_BENCHMARK_SHARES",
+    "CATEGORY_METADATA",
 ]
+

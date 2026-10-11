@@ -278,6 +278,14 @@ export default function Verify() {
         <div className="verify-tabs">
           <button
             type="button"
+            className={`tab-btn ${activeTab === 'all' ? 'active' : ''}`}
+            onClick={() => setActiveTab('all')}
+            id="tab-all-txs"
+          >
+            All ({counts.all || 0})
+          </button>
+          <button
+            type="button"
             className={`tab-btn ${activeTab === 'review' ? 'active' : ''}`}
             onClick={() => setActiveTab('review')}
             id="tab-review-all"
