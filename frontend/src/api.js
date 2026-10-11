@@ -377,5 +377,34 @@ export const goalsService = {
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 8 — AI Chatbox (Claude API with Function Calling) Service
+// ──────────────────────────────────────────────────────────────────────────────
+export const chatService = {
+  /**
+   * Send a message to AI Copilot. Triggers multi-turn function calling backend loop.
+   */
+  async sendMessage(message) {
+    const response = await api.post('chat/', { message });
+    return response.data;
+  },
+
+  /**
+   * Fetch conversation history.
+   */
+  async getHistory() {
+    const response = await api.get('chat/history/');
+    return response.data;
+  },
+
+  /**
+   * Clear chat history.
+   */
+  async clearHistory() {
+    const response = await api.delete('chat/history/');
+    return response.data;
+  },
+};
+
 export default api;
 

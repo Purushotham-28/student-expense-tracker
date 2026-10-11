@@ -672,3 +672,46 @@ def health_score_view(request):
     """
     data = get_user_financial_health_score(request.user)
     return Response(data, status=status.HTTP_200_OK)
+
+
+# ── Phase 8 — AI Chatbox (Claude API with Function Calling) ────────────────
+
+from .models import ChatMessage  # noqa: E402
+from .serializers import ChatMessageSerializer  # noqa: E402
+from .services.chat_service import process_chat_message  # noqa: E402
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def chat_view(request):
+    """
+    POST /api/chat — Send a message, trigger tool loop with Claude, and get AI guidance.
+      Payload: { "message": "How much did I spend on food?" }
+    GET /api/chat — Retrieve recent chat message history for the student.
+    """
+    if request.method == 'GET':
+        limit = int(request.query_params.get('limit', 50))
+        messages = ChatMessage.objects.filter(user=request.user).order_by('created_at')[:limit]
+        return Response(ChatMessageSerializer(messages, many=True).data, status=status.HTTP_200_OK)
+
+    message_content = request.data.get('message', '').strip()
+    if not message_content:
+        return Response({'error': 'Message content cannot be empty.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = process_chat_message(user=request.user, message_content=message_content)
+    return Response(result, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def chat_history_view(request):
+    """
+    GET /api/chat/history — Fetch full chronological conversation history.
+    DELETE /api/chat/history — Clear conversation history.
+    """
+    if request.method == 'DELETE':
+        ChatMessage.objects.filter(user=request.user).delete()
+        return Response({'success': True, 'message': 'Chat history cleared.'}, status=status.HTTP_200_OK)
+
+    messages = ChatMessage.objects.filter(user=request.user).order_by('created_at')
+    return Response(ChatMessageSerializer(messages, many=True).data, status=status.HTTP_200_OK)

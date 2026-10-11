@@ -226,3 +226,29 @@ class Goal(models.Model):
 
     def __str__(self):
         return f"{self.user.username} — {self.name} (₹{self.saved_so_far}/₹{self.target_amount})"
+
+
+class ChatMessage(models.Model):
+    """
+    Phase 8 — AI Chatbox (Claude API with Function Calling)
+    Stores student conversation history and tool execution traces.
+    """
+
+    class Role(models.TextChoices):
+        USER = "user", "User"
+        ASSISTANT = "assistant", "Assistant"
+        SYSTEM = "system", "System"
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="chat_messages"
+    )
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.USER)
+    content = models.TextField()
+    tool_calls = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} [{self.role}]: {self.content[:40]}"

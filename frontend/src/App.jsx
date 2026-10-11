@@ -23,6 +23,7 @@ import Verify from './pages/Verify';
 import Runway from './pages/Runway';
 import Goals from './pages/Goals';
 import FinancialHealthCard from './components/FinancialHealthCard';
+import ChatWidget from './components/ChatWidget';
 import './App.css';
 
 // Initial sample transactions
@@ -772,6 +773,9 @@ export default function App() {
           onClose={() => setIsBudgetModalOpen(false)}
           onBudgetUpdated={handleBudgetUpdated}
         />
+
+        {/* Phase 8 — AI Chatbox (Claude API with Function Calling) */}
+        <ChatWidget />
 
         <footer className="footer">
           <p>© 2026 Student Expense Tracker • Campus Edition</p>

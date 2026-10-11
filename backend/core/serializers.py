@@ -125,7 +125,7 @@ class LoginSerializer(serializers.Serializer):
 
 # ── Statement & Transaction serializers ────────────────────────────────────
 
-from .models import Statement, Transaction, PayeeMapping, ExpenseCategory, Goal  # noqa: E402
+from .models import Statement, Transaction, PayeeMapping, ExpenseCategory, Goal, ChatMessage  # noqa: E402
 
 
 class PayeeMappingSerializer(serializers.ModelSerializer):
@@ -217,3 +217,13 @@ class GoalSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Saved amount cannot be negative.")
         return value
+
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    """
+    Serializer for ChatMessage records (student and assistant messages with tool calls).
+    """
+    class Meta:
+        model = ChatMessage
+        fields = ['id', 'role', 'content', 'tool_calls', 'created_at']
+        read_only_fields = ['id', 'created_at']

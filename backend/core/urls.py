@@ -20,6 +20,8 @@ from .views import (
     goal_contribute_view,
     goal_suggestion_view,
     health_score_view,
+    chat_view,
+    chat_history_view,
 )
 
 urlpatterns = [
@@ -56,4 +58,8 @@ urlpatterns = [
     re_path(r'^goals/(?P<pk>\d+)/?$', goal_detail_view, name='goal_detail'),
     re_path(r'^goals/(?P<pk>\d+)/contribute/?$', goal_contribute_view, name='goal_contribute'),
     re_path(r'^goals/(?P<pk>\d+)/suggestion/?$', goal_suggestion_view, name='goal_specific_suggestion'),
+
+    # Phase 8 — AI Chatbox (Claude API with Function Calling)
+    re_path(r'^chat/?$', chat_view, name='chat'),
+    re_path(r'^chat/history/?$', chat_history_view, name='chat_history'),
 ]

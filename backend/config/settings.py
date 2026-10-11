@@ -166,3 +166,7 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://127.0.0.1:5173',
 ])
 CORS_ALLOW_CREDENTIALS = True
+
+# Phase 8 — Anthropic Claude AI Settings
+ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default=env('CLAUDE_API_KEY', default=''))
+ANTHROPIC_MODEL = env('ANTHROPIC_MODEL', default='claude-sonnet-4-6')

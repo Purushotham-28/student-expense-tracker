@@ -12,7 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Statement, Transaction, UserProfile, Goal
+from .models import Statement, Transaction, UserProfile, Goal, ChatMessage
 from .parsers import parse_statement
 from .parsers.sbi_csv import SbiCsvParser
 from .parsers.hdfc_pdf import HdfcPdfParser
@@ -1206,3 +1206,179 @@ class FinancialHealthScoreTests(TestCase):
         self.assertIn("spending_volatility", comps)
         self.assertIsInstance(res.data["tips"], list)
         self.assertGreaterEqual(len(res.data["tips"]), 2)
+
+
+from .services.chat_service import execute_chat_tool, process_chat_message, CLAUDE_TOOLS  # noqa: E402
+
+
+class AIChatboxFunctionCallingTests(TestCase):
+    """
+    Phase 8 Tests — AI Chatbox (Claude API with Function Calling)
+    Covers:
+      - Tool execution: add_expense, get_spending_summary, get_runway, run_whatif, get_goal_status, get_health_score
+      - Multi-turn tool execution loop & real data grounding
+      - ChatMessage persistence across interactions
+      - POST /api/chat and GET /api/chat/history endpoints
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="student_ai",
+            email="ai@campus.edu",
+            password="testpassword123",
+        )
+        self.profile = UserProfile.objects.create(
+            user=self.user,
+            college_roll_number="CS2026-AI",
+            monthly_income=Decimal("15000.00"),
+            monthly_budget_limit=Decimal("10000.00"),
+        )
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename="ai_stmt.csv",
+            file_type="csv",
+            status=Statement.Status.DONE,
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_tools_schema_definition(self):
+        """All required tools exist with schemas: add_expense, get_spending_summary, get_runway, run_whatif, get_goal_status, get_health_score."""
+        tool_names = [t["name"] for t in CLAUDE_TOOLS]
+        self.assertIn("add_expense", tool_names)
+        self.assertIn("get_spending_summary", tool_names)
+        self.assertIn("get_runway", tool_names)
+        self.assertIn("run_whatif", tool_names)
+        self.assertIn("get_goal_status", tool_names)
+        self.assertIn("get_health_score", tool_names)
+
+    def test_add_expense_tool_creates_transaction(self):
+        """add_expense tool creates a Transaction with accurate amount, payee, and category."""
+        res = execute_chat_tool(
+            self.user,
+            "add_expense",
+            {
+                "amount": 180.0,
+                "item": "Campus Coffee & Croissant",
+                "category": "Food",
+                "payee": "Nescafe Kiosk",
+            },
+        )
+        self.assertTrue(res["success"])
+        self.assertEqual(res["amount"], 180.0)
+        self.assertEqual(res["category"], "Food")
+
+        # Verify transaction in database
+        tx = Transaction.objects.get(id=res["transaction_id"])
+        self.assertEqual(tx.user, self.user)
+        self.assertEqual(tx.amount, Decimal("180.00"))
+        self.assertEqual(tx.category, "Food")
+        self.assertEqual(tx.payee_name, "Nescafe Kiosk")
+
+    def test_get_spending_summary_tool_queries_real_totals(self):
+        """get_spending_summary returns accurate sums and transaction counts."""
+        today = date.today()
+        # Seed 2 transactions under Food
+        Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=today,
+            amount=Decimal("250.00"),
+            is_debit=True,
+            category=ExpenseCategory.FOOD,
+            payee_name="Zomato",
+        )
+        Transaction.objects.create(
+            statement=self.statement,
+            user=self.user,
+            date=today,
+            amount=Decimal("350.00"),
+            is_debit=True,
+            category=ExpenseCategory.FOOD,
+            payee_name="Swiggy",
+        )
+
+        res = execute_chat_tool(self.user, "get_spending_summary", {"category": "Food"})
+        self.assertEqual(res["category"], "Food")
+        self.assertEqual(res["total_spent"], 600.0)
+        self.assertEqual(res["transaction_count"], 2)
+        self.assertEqual(res["average_transaction"], 300.0)
+        self.assertEqual(len(res["top_payees"]), 2)
+
+    def test_runway_and_whatif_tools(self):
+        """get_runway and run_whatif return concrete forecasting metrics."""
+        today = date.today()
+        # Seed recent transactions
+        for i in range(5):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=i),
+                amount=Decimal("300.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        # get_runway
+        runway_res = execute_chat_tool(self.user, "get_runway", {})
+        self.assertIn("current_balance", runway_res)
+        self.assertIn("runway_date", runway_res)
+        self.assertIn("daily_burn_rate", runway_res)
+
+        # run_whatif
+        whatif_res = execute_chat_tool(self.user, "run_whatif", {"category": "Food", "reduce_percent": 30})
+        self.assertEqual(whatif_res["category"], "Food")
+        self.assertIn("days_saved", whatif_res)
+        self.assertIn("money_saved_30d", whatif_res)
+
+    def test_goal_status_and_health_score_tools(self):
+        """get_goal_status and get_health_score execute underlying planning engines."""
+        today = date.today()
+        Goal.objects.create(
+            user=self.user,
+            name="Laptop Fund",
+            target_amount=Decimal("50000.00"),
+            saved_so_far=Decimal("10000.00"),
+            deadline=today + timedelta(days=60),
+        )
+
+        goal_res = execute_chat_tool(self.user, "get_goal_status", {"goal_name": "Laptop"})
+        self.assertEqual(len(goal_res["goals"]), 1)
+        self.assertEqual(goal_res["goals"][0]["name"], "Laptop Fund")
+
+        health_res = execute_chat_tool(self.user, "get_health_score", {})
+        self.assertIn("total_score", health_res)
+        self.assertIn("grade", health_res)
+        self.assertIn("tips", health_res)
+
+    def test_chat_endpoint_stores_history_and_returns_real_response(self):
+        """
+        POST /api/chat records user message, executes tool, saves assistant message,
+        and GET /api/chat/history returns the full persistent conversation.
+        """
+        # User asks about food spending
+        res = self.client.post(
+            "/api/chat/",
+            {"message": "How much did I spend on food this month?"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("reply", res.data)
+        self.assertIn("tools_executed", res.data)
+
+        # Confirm ChatMessage model saved 2 records (user + assistant)
+        msgs = ChatMessage.objects.filter(user=self.user).order_by("created_at")
+        self.assertEqual(msgs.count(), 2)
+        self.assertEqual(msgs[0].role, ChatMessage.Role.USER)
+        self.assertEqual(msgs[1].role, ChatMessage.Role.ASSISTANT)
+
+        # GET /api/chat/history
+        hist_res = self.client.get("/api/chat/history/")
+        self.assertEqual(hist_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(hist_res.data), 2)
+        self.assertEqual(hist_res.data[0]["content"], "How much did I spend on food this month?")
+
+        # DELETE /api/chat/history
+        del_res = self.client.delete("/api/chat/history/")
+        self.assertEqual(del_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(ChatMessage.objects.filter(user=self.user).count(), 0)

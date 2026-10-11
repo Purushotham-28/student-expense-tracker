@@ -32,6 +32,12 @@ from .health_score_service import (
     get_user_financial_health_score,
 )
 
+from .chat_service import (
+    process_chat_message,
+    execute_chat_tool,
+    CLAUDE_TOOLS,
+)
+
 __all__ = [
     "process_uploaded_statement",
     "validate_upload",
@@ -55,4 +61,7 @@ __all__ = [
     "TRIMMABLE_CATEGORIES",
     "calculate_financial_health_score",
     "get_user_financial_health_score",
+    "process_chat_message",
+    "execute_chat_tool",
+    "CLAUDE_TOOLS",
 ]
