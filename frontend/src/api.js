@@ -294,6 +294,14 @@ export const planningService = {
     const response = await api.post('planning/whatif/', payload);
     return response.data;
   },
+
+  /**
+   * Phase 7 — Fetch 0-100 Financial Health Score with sub-score components and tips.
+   */
+  async getHealthScore() {
+    const response = await api.get('planning/health-score/');
+    return response.data;
+  },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────

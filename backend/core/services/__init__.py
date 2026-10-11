@@ -27,6 +27,11 @@ from .goal_service import (
     TRIMMABLE_CATEGORIES,
 )
 
+from .health_score_service import (
+    calculate_financial_health_score,
+    get_user_financial_health_score,
+)
+
 __all__ = [
     "process_uploaded_statement",
     "validate_upload",
@@ -48,4 +53,6 @@ __all__ = [
     "contribute_to_goal",
     "check_goal_progress_and_suggest_cut",
     "TRIMMABLE_CATEGORIES",
+    "calculate_financial_health_score",
+    "get_user_financial_health_score",
 ]

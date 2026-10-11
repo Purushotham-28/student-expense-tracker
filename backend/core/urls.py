@@ -19,6 +19,7 @@ from .views import (
     goal_detail_view,
     goal_contribute_view,
     goal_suggestion_view,
+    health_score_view,
 )
 
 urlpatterns = [
@@ -44,9 +45,10 @@ urlpatterns = [
     re_path(r'^transactions/(?P<pk>\d+)/categorize/?$', categorize_transaction_view, name='transaction_categorize'),
     re_path(r'^transactions/(?P<pk>\d+)/confirm/?$', confirm_transaction_view, name='transaction_confirm'),
 
-    # Phase 5 — Forecasting & Runway Simulator
+    # Phase 5 & 7 — Forecasting, Runway Simulator & Health Score
     re_path(r'^planning/runway/?$', runway_view, name='planning_runway'),
     re_path(r'^planning/whatif/?$', whatif_view, name='planning_whatif'),
+    re_path(r'^planning/health-score/?$', health_score_view, name='planning_health_score'),
 
     # Phase 6 — Goal Planner & Adaptive Savings
     re_path(r'^goals/?$', goals_view, name='goals_list_create'),

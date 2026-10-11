@@ -1072,3 +1072,137 @@ class GoalPlannerTests(TestCase):
         self.assertGreater(res.data["recommended_reduction_percent"], 0)
         self.assertGreater(res.data["projected_weekly_savings"], 0)
         self.assertIn("message", res.data)
+
+
+from .services.health_score_service import calculate_financial_health_score  # noqa: E402
+
+
+class FinancialHealthScoreTests(TestCase):
+    """
+    Phase 7 Tests — Financial Health Score
+    Covers:
+      - Savings rate component (0-40 pts)
+      - Budget adherence component (0-30 pts)
+      - Volatility component (0-30 pts, inverse of coefficient of variation)
+      - Tip generation logic
+      - GET /api/planning/health-score endpoint
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="student_health",
+            email="health@campus.edu",
+            password="testpassword123",
+        )
+        self.profile = UserProfile.objects.create(
+            user=self.user,
+            college_roll_number="CS2026-HEALTH",
+            monthly_income=Decimal("16000.00"),
+            monthly_budget_limit=Decimal("12000.00"),
+        )
+        self.statement = Statement.objects.create(
+            user=self.user,
+            original_filename="health_stmt.csv",
+            file_type="csv",
+            status=Statement.Status.DONE,
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_perfect_saver_scores_near_100(self):
+        """
+        A student with >= 30% savings rate, 100% budget adherence, and steady
+        weekly spending across 4 weeks should achieve a score near or at 100.
+        """
+        # Income = 20,000, Spend = 12,000 (Savings rate = 40% >= 30% -> 40 pts)
+        # Budget = 15,000 (Spend 12,000 <= 15,000 -> 30 pts)
+        # Weekly spends = exactly 3,000 each week (CV = 0 -> 30 pts)
+        res = calculate_financial_health_score(
+            income=20000.0,
+            spend=12000.0,
+            budget_limit=15000.0,
+            weekly_spends=[3000.0, 3000.0, 3000.0, 3000.0],
+        )
+
+        self.assertEqual(res["total_score"], 100.0)
+        self.assertEqual(res["grade"], "A+")
+        self.assertEqual(res["status"], "Excellent")
+        self.assertEqual(res["components"]["savings_rate"]["score"], 40.0)
+        self.assertEqual(res["components"]["budget_adherence"]["score"], 30.0)
+        self.assertEqual(res["components"]["spending_volatility"]["score"], 30.0)
+        self.assertGreaterEqual(len(res["tips"]), 2)
+
+    def test_overspender_with_high_volatility_scores_low(self):
+        """
+        A student with negative savings, severe budget overspend, and erratic
+        lumpy spending should receive a low score and targeted corrective tips.
+        """
+        # Income = 10,000, Spend = 16,000 (Savings rate = -60% -> 0 pts)
+        # Budget = 10,000 (Overspent by 60% -> 30 * (1 - 0.6) = 12 pts)
+        # Weekly spends: [500, 12000, 1000, 2500] (High CV -> low volatility score < 16 pts)
+        res = calculate_financial_health_score(
+            income=10000.0,
+            spend=16000.0,
+            budget_limit=10000.0,
+            weekly_spends=[500.0, 12000.0, 1000.0, 2500.0],
+        )
+
+        self.assertLess(res["total_score"], 35.0)
+        self.assertEqual(res["grade"], "D")
+        self.assertEqual(res["status"], "Needs Attention")
+        self.assertEqual(res["components"]["savings_rate"]["score"], 0.0)
+        self.assertLessEqual(res["components"]["budget_adherence"]["score"], 15.0)
+        self.assertLess(res["components"]["spending_volatility"]["score"], 16.0)
+        # Tips should flag savings or budget as top concern
+        tips_text = " ".join(res["tips"]).lower()
+        self.assertTrue("savings" in tips_text or "outflows" in tips_text or "budget" in tips_text)
+
+    def test_moderate_steady_saver(self):
+        """
+        A steady student saving 15% of income within budget should score in the Good / B range (~75-80).
+        """
+        # Income = 15,000, Spend = 12,750 (Savings rate = 15% -> 20 pts)
+        # Budget = 13,000 (Spend <= Budget -> 30 pts)
+        # Weekly spends = [3100, 3200, 3250, 3200] (Very low CV ~0.016 -> ~29.5 pts)
+        res = calculate_financial_health_score(
+            income=15000.0,
+            spend=12750.0,
+            budget_limit=13000.0,
+            weekly_spends=[3100.0, 3200.0, 3250.0, 3200.0],
+        )
+
+        self.assertGreaterEqual(res["total_score"], 75.0)
+        self.assertLessEqual(res["total_score"], 85.0)
+        self.assertIn(res["grade"], ["B", "A+"])
+        self.assertEqual(res["components"]["budget_adherence"]["score"], 30.0)
+        self.assertEqual(res["components"]["savings_rate"]["score"], 20.0)
+
+    def test_health_score_endpoint(self):
+        """GET /api/planning/health-score returns score, components, and tips."""
+        today = date.today()
+        # Seed 4 weeks of moderate expenses
+        for week_idx in range(4):
+            Transaction.objects.create(
+                statement=self.statement,
+                user=self.user,
+                date=today - timedelta(days=week_idx * 7 + 2),
+                amount=Decimal("2000.00"),
+                is_debit=True,
+                category=ExpenseCategory.FOOD,
+            )
+
+        res = self.client.get("/api/planning/health-score/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("total_score", res.data)
+        self.assertIn("grade", res.data)
+        self.assertIn("status", res.data)
+        self.assertIn("components", res.data)
+        self.assertIn("tips", res.data)
+
+        # Confirm the 3 components exist
+        comps = res.data["components"]
+        self.assertIn("savings_rate", comps)
+        self.assertIn("budget_adherence", comps)
+        self.assertIn("spending_volatility", comps)
+        self.assertIsInstance(res.data["tips"], list)
+        self.assertGreaterEqual(len(res.data["tips"]), 2)

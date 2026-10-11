@@ -652,3 +652,23 @@ def goal_suggestion_view(request, pk=None):
 
     suggestion = check_goal_progress_and_suggest_cut(user=request.user, goal_id=goal_id)
     return Response(suggestion, status=status.HTTP_200_OK)
+
+
+# ── Phase 7 — Financial Health Score ────────────────────────────────────────
+
+from .services.health_score_service import get_user_financial_health_score  # noqa: E402
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def health_score_view(request):
+    """
+    GET /api/planning/health-score
+    Computes a 0-100 financial health score for the current month combining:
+      - Savings rate component (up to 40 pts)
+      - Budget adherence component (up to 30 pts)
+      - Spending volatility component (up to 30 pts)
+    Returns the total score, the three sub-scores, metrics breakdown, and 2-3 generated tips.
+    """
+    data = get_user_financial_health_score(request.user)
+    return Response(data, status=status.HTTP_200_OK)

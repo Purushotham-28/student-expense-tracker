@@ -22,6 +22,7 @@ import Upload from './pages/Upload';
 import Verify from './pages/Verify';
 import Runway from './pages/Runway';
 import Goals from './pages/Goals';
+import FinancialHealthCard from './components/FinancialHealthCard';
 import './App.css';
 
 // Initial sample transactions
@@ -267,6 +268,9 @@ function Dashboard({ expenses, onAddExpense, userProfile, onOpenBudgetModal }) {
           </Link>
         </div>
       )}
+
+      {/* Phase 7 — Financial Health Score Component */}
+      <FinancialHealthCard />
 
       {/* Metrics Row */}
       <section className="metrics-grid">
