@@ -50,11 +50,13 @@ class HdfcPdfParser(BaseStatementParser):
     def can_parse(cls, file_bytes: bytes, filename: str) -> bool:
         if not filename.lower().endswith(".pdf"):
             return False
-        # Quick text scan for HDFC identifiers
+        # Text scan for authentic HDFC Bank statement headers
         try:
             with pdfplumber.open(__import__("io").BytesIO(file_bytes)) as pdf:
-                first_text = (pdf.pages[0].extract_text() or "").lower() if pdf.pages else ""
-                return "hdfc" in first_text or "hdfc bank" in first_text
+                if not pdf.pages:
+                    return False
+                first_text = (pdf.pages[0].extract_text() or "").lower()
+                return "hdfc bank" in first_text or ("hdfc" in first_text and "account statement" in first_text)
         except Exception:
             return False
 

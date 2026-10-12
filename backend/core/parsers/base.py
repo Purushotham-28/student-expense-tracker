@@ -43,11 +43,15 @@ NormRow = Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 def _clean_amount(text: str) -> Decimal:
-    """Strip currency symbols, commas, spaces → Decimal."""
-    cleaned = re.sub(r"[₹$,\s]", "", str(text)).strip()
+    """Strip currency symbols, Indian lakh commas, spaces, Dr/Cr suffixes → Decimal."""
+    s = str(text or "").strip()
+    s = re.sub(r"(?i)\b(?:rs\.?|inr)\b|[₹$,\s]", "", s)
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        return Decimal("0")
     try:
-        return Decimal(cleaned)
-    except InvalidOperation:
+        return Decimal(m.group(1))
+    except (InvalidOperation, ValueError):
         return Decimal("0")
 
 
@@ -58,12 +62,18 @@ def _parse_date(text: str, formats=None) -> date | None:
             "%Y-%m-%d", "%d/%m/%y", "%d-%m-%y",
             "%d %b %y", "%m/%d/%Y",
         ]
-    text = str(text).strip()
-    for fmt in formats:
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
+    raw = str(text or "").strip()
+    # Normalize compact dates like 26May,2026 -> 26 May 2026
+    normalized = re.sub(r"(\d+)([A-Za-z]+)", r"\1 \2", raw)
+    normalized = re.sub(r",", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    for candidate in [raw, normalized]:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
     return None
 
 
