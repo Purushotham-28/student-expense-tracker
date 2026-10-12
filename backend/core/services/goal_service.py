@@ -144,6 +144,8 @@ def check_goal_progress_and_suggest_cut(
     debit_txns = Transaction.objects.filter(
         user=user,
         is_debit=True,
+        is_deleted=False,
+        is_duplicate=False,
         date__gte=cutoff_30d,
     )
     total_debit_30d = float(debit_txns.aggregate(s=Sum("amount"))["s"] or 0.0)
@@ -151,6 +153,8 @@ def check_goal_progress_and_suggest_cut(
     credit_txns = Transaction.objects.filter(
         user=user,
         is_debit=False,
+        is_deleted=False,
+        is_duplicate=False,
         date__gte=cutoff_30d,
     )
     total_credit_30d = float(credit_txns.aggregate(s=Sum("amount"))["s"] or 0.0)

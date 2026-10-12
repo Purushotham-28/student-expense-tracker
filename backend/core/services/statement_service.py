@@ -77,45 +77,106 @@ def process_uploaded_statement(
             stmt.save(update_fields=["status", "error_message", "bank_format"])
             return stmt
 
-        # 4 — Bulk-create Transaction rows
-        tx_objects = [
-            Transaction(
-                statement=stmt,
-                user=user,
-                date=row.get("date"),
-                time=row.get("time"),
-                amount=row["amount"],
-                is_debit=row.get("is_debit", True),
-                payee_name=row.get("payee_name", ""),
-                upi_id=row.get("upi_id", ""),
-                remark=row.get("remark", ""),
-                raw_text=row.get("raw_text", ""),
+        # 4 — Duplicate Detection & Transaction Creation
+        dates = [r["date"] for r in rows if r.get("date")]
+        min_date = min(dates) if dates else None
+        max_date = max(dates) if dates else None
+
+        existing_txs = []
+        if min_date and max_date:
+            existing_txs = list(
+                Transaction.objects.filter(
+                    user=user,
+                    is_deleted=False,
+                    date__gte=min_date,
+                    date__lte=max_date,
+                ).values("id", "date", "amount", "payee_name", "upi_id", "remark")
             )
-            for row in rows
-        ]
+
+        def _is_duplicate_match(row_data, existing_list):
+            r_date = row_data.get("date")
+            r_amount = row_data["amount"]
+            r_payee = (row_data.get("payee_name") or "").strip().lower()
+            r_upi = (row_data.get("upi_id") or "").strip().lower()
+            r_remark = (row_data.get("remark") or "").strip().lower()
+
+            for item in existing_list:
+                if item["date"] == r_date and item["amount"] == r_amount:
+                    i_payee = (item["payee_name"] or "").strip().lower()
+                    i_upi = (item["upi_id"] or "").strip().lower()
+                    i_remark = (item["remark"] or "").strip().lower()
+
+                    # Check if payee/UPI/remark match or one contains the other
+                    if (r_upi and i_upi and r_upi == i_upi) or \
+                       (r_payee and i_payee and (r_payee == i_payee or r_payee in i_payee or i_payee in r_payee)) or \
+                       (r_remark and i_remark and (r_remark == i_remark or r_remark in i_remark or i_remark in r_remark)) or \
+                       (not r_payee and not i_payee):
+                        return True
+            return False
+
+        tx_objects = []
+        duplicate_count = 0
+        seen_in_batch = []
+
+        for row in rows:
+            is_dup = _is_duplicate_match(row, existing_txs) or _is_duplicate_match(row, seen_in_batch)
+            if is_dup:
+                duplicate_count += 1
+
+            tx_objects.append(
+                Transaction(
+                    statement=stmt,
+                    user=user,
+                    date=row.get("date"),
+                    time=row.get("time"),
+                    amount=row["amount"],
+                    is_debit=row.get("is_debit", True),
+                    payee_name=row.get("payee_name", ""),
+                    upi_id=row.get("upi_id", ""),
+                    remark=row.get("remark", ""),
+                    raw_text=row.get("raw_text", ""),
+                    is_duplicate=is_dup,
+                    status=Transaction.ParseStatus.DUPLICATE if is_dup else Transaction.ParseStatus.PENDING,
+                )
+            )
+            seen_in_batch.append({
+                "date": row.get("date"),
+                "amount": row["amount"],
+                "payee_name": row.get("payee_name", ""),
+                "upi_id": row.get("upi_id", ""),
+                "remark": row.get("remark", ""),
+            })
+
         Transaction.objects.bulk_create(tx_objects, batch_size=500)
 
         # 5 — Run hybrid categorization on each transaction
         from .categorization_service import categorize_transaction
         for tx in stmt.transactions.all():
             try:
+                # If duplicate, categorize for info but keep duplicate status
+                orig_status = tx.status
+                is_dup = tx.is_duplicate
                 categorize_transaction(tx, save=True)
+                if is_dup:
+                    tx.status = Transaction.ParseStatus.DUPLICATE
+                    tx.is_duplicate = True
+                    tx.save(update_fields=["status", "is_duplicate"])
             except Exception as cat_err:
                 logger.warning("Failed auto-categorizing transaction %s: %s", tx.pk, cat_err)
 
         # 6 — Compute date range from rows
-        dates = [r["date"] for r in rows if r.get("date")]
         date_from = min(dates) if dates else None
         date_to   = max(dates) if dates else None
 
         stmt.status            = Statement.Status.DONE
         stmt.bank_format       = format_name
         stmt.transaction_count = len(rows)
+        stmt.duplicate_count   = duplicate_count
         stmt.date_from         = date_from
         stmt.date_to           = date_to
         stmt.processed_at      = datetime.now(tz=timezone.utc)
         stmt.save(update_fields=[
-            "status", "bank_format", "transaction_count",
+            "status", "bank_format", "transaction_count", "duplicate_count",
             "date_from", "date_to", "processed_at",
         ])
 

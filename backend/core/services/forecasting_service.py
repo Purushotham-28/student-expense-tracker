@@ -57,6 +57,8 @@ def get_user_spending_data(
     txns = Transaction.objects.filter(
         user=user,
         is_debit=True,
+        is_deleted=False,
+        is_duplicate=False,
         date__isnull=False,
     ).order_by("date")
 
@@ -246,6 +248,8 @@ def calculate_cash_flow_runway(
             Transaction.objects.filter(
                 user=user,
                 is_debit=True,
+                is_deleted=False,
+                is_duplicate=False,
                 date__year=today.year,
                 date__month=today.month,
             ).aggregate(total=Sum("amount"))["total"]

@@ -72,7 +72,7 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
     days_remaining = max(0, days_in_month - today.day)
 
     # 1. Transactions & Budget vs Actual this month
-    all_user_txs = Transaction.objects.filter(user=user)
+    all_user_txs = Transaction.objects.filter(user=user, is_deleted=False, is_duplicate=False)
     month_txs = all_user_txs.filter(
         is_debit=True,
         date__gte=start_of_month,

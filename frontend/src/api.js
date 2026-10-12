@@ -229,6 +229,22 @@ export const statementService = {
     const response = await api.get(`statements/${statementId}/`);
     return response.data;
   },
+
+  /**
+   * Soft-delete a statement and all its transactions.
+   */
+  async delete(statementId) {
+    const response = await api.delete(`statements/${statementId}/`);
+    return response.data;
+  },
+
+  /**
+   * Restore a soft-deleted statement and its transactions.
+   */
+  async restore(statementId) {
+    const response = await api.post(`statements/${statementId}/restore/`);
+    return response.data;
+  },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -236,7 +252,7 @@ export const statementService = {
 // ──────────────────────────────────────────────────────────────────────────────
 export const transactionService = {
   /**
-   * List transactions with status filter ('verify', 'pending', 'auto', 'all')
+   * List transactions with status filter ('verify', 'pending', 'auto', 'duplicate', 'deleted', 'all')
    * and pagination.
    */
   async list({ status = 'all', page = 1, pageSize = 50 } = {}) {
@@ -273,6 +289,38 @@ export const transactionService = {
    */
   async categorize(id) {
     const response = await api.post(`transactions/${id}/categorize/`);
+    return response.data;
+  },
+
+  /**
+   * Soft-delete a single transaction.
+   */
+  async delete(id) {
+    const response = await api.delete(`transactions/${id}/`);
+    return response.data;
+  },
+
+  /**
+   * Restore a soft-deleted transaction.
+   */
+  async restore(id) {
+    const response = await api.post(`transactions/${id}/restore/`);
+    return response.data;
+  },
+
+  /**
+   * Bulk soft-delete transactions by IDs.
+   */
+  async bulkDelete(ids) {
+    const response = await api.post('transactions/bulk-delete/', { ids });
+    return response.data;
+  },
+
+  /**
+   * Bulk restore soft-deleted transactions by IDs.
+   */
+  async bulkRestore(ids) {
+    const response = await api.post('transactions/bulk-restore/', { ids });
     return response.data;
   },
 };

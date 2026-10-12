@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -156,15 +157,17 @@ def upload_statement(request):
             'statement_id': stmt.pk,
         }, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-    auto_count = stmt.transactions.filter(status=Transaction.ParseStatus.AUTO).count()
-    verify_count = stmt.transactions.filter(status=Transaction.ParseStatus.VERIFY).count()
-    pending_count = stmt.transactions.filter(status=Transaction.ParseStatus.PENDING).count()
+    auto_count = stmt.transactions.filter(status=Transaction.ParseStatus.AUTO, is_deleted=False).count()
+    verify_count = stmt.transactions.filter(status=Transaction.ParseStatus.VERIFY, is_deleted=False).count()
+    pending_count = stmt.transactions.filter(status=Transaction.ParseStatus.PENDING, is_deleted=False).count()
+    duplicate_count = stmt.duplicate_count
 
     return Response({
-        'message': f'Successfully parsed {stmt.transaction_count} transaction(s).',
+        'message': f'Successfully parsed {stmt.transaction_count} transaction(s)' + (f' ({duplicate_count} duplicate(s) flagged).' if duplicate_count else '.'),
         'statement': StatementSummarySerializer(stmt).data,
         'summary': {
             'total_transactions': stmt.transaction_count,
+            'duplicate_count': duplicate_count,
             'auto_count': auto_count,
             'verify_count': verify_count,
             'pending_count': pending_count,
@@ -178,20 +181,75 @@ def upload_statement(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_statements(request):
-    """GET /api/statements/ — return the authenticated user's past uploads."""
-    stmts = Statement.objects.filter(user=request.user).order_by('-uploaded_at')[:50]
+    """GET /api/statements/ — return the authenticated user's active (non-deleted) uploads."""
+    stmts = Statement.objects.filter(user=request.user, is_deleted=False).order_by('-uploaded_at')[:50]
     return Response(StatementSummarySerializer(stmts, many=True).data)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def statement_detail(request, pk):
-    """GET /api/statements/<pk>/ — full statement with transactions."""
+    """
+    GET /api/statements/<pk>/ — full statement with transactions.
+    DELETE /api/statements/<pk>/ — soft-delete statement and all associated transactions.
+    """
+    if request.method == 'GET':
+        try:
+            stmt = Statement.objects.get(pk=pk, user=request.user, is_deleted=False)
+        except Statement.DoesNotExist:
+            return Response({'error': 'Statement not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(StatementSerializer(stmt).data)
+
+    elif request.method == 'DELETE':
+        try:
+            stmt = Statement.objects.get(pk=pk, user=request.user, is_deleted=False)
+        except Statement.DoesNotExist:
+            return Response({'error': 'Statement not found or already deleted.'}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+        stmt.is_deleted = True
+        stmt.deleted_at = now
+        stmt.save(update_fields=['is_deleted', 'deleted_at'])
+
+        deleted_txs = stmt.transactions.filter(is_deleted=False).update(
+            is_deleted=True,
+            deleted_at=now,
+        )
+
+        return Response({
+            'message': f'Statement "{stmt.original_filename}" and {deleted_txs} associated transaction(s) deleted.',
+            'statement_id': stmt.pk,
+            'deleted_transactions_count': deleted_txs,
+            'payee_mapping_preserved': True,
+        }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def restore_statement_view(request, pk):
+    """
+    POST /api/statements/<pk>/restore/
+    Restores a soft-deleted statement and its transactions.
+    """
     try:
-        stmt = Statement.objects.get(pk=pk, user=request.user)
+        stmt = Statement.objects.get(pk=pk, user=request.user, is_deleted=True)
     except Statement.DoesNotExist:
-        return Response({'error': 'Statement not found.'}, status=status.HTTP_404_NOT_FOUND)
-    return Response(StatementSerializer(stmt).data)
+        return Response({'error': 'Deleted statement not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    stmt.is_deleted = False
+    stmt.deleted_at = None
+    stmt.save(update_fields=['is_deleted', 'deleted_at'])
+
+    restored_txs = stmt.transactions.filter(is_deleted=True).update(
+        is_deleted=False,
+        deleted_at=None,
+    )
+
+    return Response({
+        'message': f'Statement "{stmt.original_filename}" and {restored_txs} transaction(s) restored.',
+        'statement_id': stmt.pk,
+        'restored_transactions_count': restored_txs,
+    }, status=status.HTTP_200_OK)
 
 
 # ── Phase 3 — Hybrid Categorization & Payee Mappings ────────────────────────
@@ -308,32 +366,37 @@ def categorize_statement_view(request, pk):
 @permission_classes([IsAuthenticated])
 def list_transactions_view(request):
     """
-    GET /api/transactions?status=verify|pending|auto|all&page=1&page_size=20
+    GET /api/transactions?status=verify|pending|auto|duplicate|deleted|all&page=1&page_size=20
     Filters transactions by status, with pagination.
-    Sorted by amount descending within 'pending' so biggest unknowns show first.
+    Soft-deleted transactions are filtered out by default unless status=deleted.
     """
     status_filter = request.query_params.get('status', 'all').lower().strip()
-    user_txs = Transaction.objects.filter(user=request.user)
+    active_user_txs = Transaction.objects.filter(user=request.user, is_deleted=False)
+    deleted_user_txs = Transaction.objects.filter(user=request.user, is_deleted=True)
 
     # Global breakdown counts for the user
     counts = {
-        'all': user_txs.count(),
-        'auto': user_txs.filter(status=Transaction.ParseStatus.AUTO).count(),
-        'verify': user_txs.filter(status=Transaction.ParseStatus.VERIFY).count(),
-        'pending': user_txs.filter(status=Transaction.ParseStatus.PENDING).count(),
+        'all': active_user_txs.count(),
+        'auto': active_user_txs.filter(status=Transaction.ParseStatus.AUTO).count(),
+        'verify': active_user_txs.filter(status=Transaction.ParseStatus.VERIFY).count(),
+        'pending': active_user_txs.filter(status=Transaction.ParseStatus.PENDING).count(),
+        'duplicate': active_user_txs.filter(is_duplicate=True).count(),
+        'deleted': deleted_user_txs.count(),
     }
 
     # Apply status filter
-    if status_filter in ['auto', 'verify', 'pending']:
-        queryset = user_txs.filter(status=status_filter)
+    if status_filter == 'deleted':
+        queryset = deleted_user_txs.order_by('-deleted_at', '-id')
+    elif status_filter == 'duplicate':
+        queryset = active_user_txs.filter(is_duplicate=True).order_by('-date', '-id')
+    elif status_filter in ['auto', 'verify', 'pending']:
+        queryset = active_user_txs.filter(status=status_filter)
+        if status_filter == 'pending':
+            queryset = queryset.order_by('-amount', '-date', '-id')
+        else:
+            queryset = queryset.order_by('-date', '-id')
     else:
-        queryset = user_txs
-
-    # Sorting: within pending, biggest unknowns show first
-    if status_filter == 'pending':
-        queryset = queryset.order_by('-amount', '-date', '-id')
-    else:
-        queryset = queryset.order_by('-date', '-id')
+        queryset = active_user_txs.order_by('-date', '-id')
 
     # Pagination
     try:
@@ -361,6 +424,101 @@ def list_transactions_view(request):
         'counts': counts,
         'results': TransactionSerializer(page_items, many=True).data,
     })
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_transaction_view(request, pk):
+    """
+    DELETE /api/transactions/<pk>/
+    Soft-deletes a single transaction. Preserves PayeeMapping rules.
+    """
+    try:
+        tx = Transaction.objects.get(pk=pk, user=request.user, is_deleted=False)
+    except Transaction.DoesNotExist:
+        return Response({'error': 'Transaction not found or already deleted.'}, status=status.HTTP_404_NOT_FOUND)
+
+    tx.is_deleted = True
+    tx.deleted_at = timezone.now()
+    tx.save(update_fields=['is_deleted', 'deleted_at'])
+
+    return Response({
+        'message': 'Transaction moved to recently deleted.',
+        'id': tx.pk,
+        'payee_mapping_preserved': True,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def restore_transaction_view(request, pk):
+    """
+    POST /api/transactions/<pk>/restore/
+    Restores a soft-deleted transaction.
+    """
+    try:
+        tx = Transaction.objects.get(pk=pk, user=request.user, is_deleted=True)
+    except Transaction.DoesNotExist:
+        return Response({'error': 'Deleted transaction not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    tx.is_deleted = False
+    tx.deleted_at = None
+    tx.save(update_fields=['is_deleted', 'deleted_at'])
+
+    return Response({
+        'message': 'Transaction restored successfully.',
+        'id': tx.pk,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_delete_transactions_view(request):
+    """
+    POST /api/transactions/bulk-delete/
+    Payload: { "ids": [1, 2, 3] }
+    Soft-deletes multiple transactions. Preserves PayeeMapping rules.
+    """
+    ids = request.data.get('ids', [])
+    if not isinstance(ids, list) or not ids:
+        return Response({'error': 'Please provide a non-empty list of transaction ids.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    now = timezone.now()
+    count = Transaction.objects.filter(
+        id__in=ids,
+        user=request.user,
+        is_deleted=False,
+    ).update(is_deleted=True, deleted_at=now)
+
+    return Response({
+        'message': f'{count} transaction(s) moved to recently deleted.',
+        'deleted_count': count,
+        'payee_mapping_preserved': True,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_restore_transactions_view(request):
+    """
+    POST /api/transactions/bulk-restore/
+    Payload: { "ids": [1, 2, 3] }
+    Restores multiple soft-deleted transactions.
+    """
+    ids = request.data.get('ids', [])
+    if not isinstance(ids, list) or not ids:
+        return Response({'error': 'Please provide a non-empty list of transaction ids.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    count = Transaction.objects.filter(
+        id__in=ids,
+        user=request.user,
+        is_deleted=True,
+    ).update(is_deleted=False, deleted_at=None)
+
+    return Response({
+        'message': f'{count} transaction(s) restored successfully.',
+        'restored_count': count,
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

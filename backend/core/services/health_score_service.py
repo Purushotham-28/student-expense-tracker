@@ -249,7 +249,7 @@ def get_user_financial_health_score(user: User) -> Dict[str, Any]:
     # Prefer actual credit transactions over last 30 days, or profile income
     cutoff_30d = today - timedelta(days=30)
     credits_sum = Transaction.objects.filter(
-        user=user, is_debit=False, date__gte=cutoff_30d
+        user=user, is_debit=False, is_deleted=False, is_duplicate=False, date__gte=cutoff_30d
     ).aggregate(s=Sum("amount"))["s"]
     credits_30d = float(credits_sum or 0.0)
 
@@ -271,7 +271,7 @@ def get_user_financial_health_score(user: User) -> Dict[str, Any]:
     # 3. Monthly Spend & 4-Week Distribution
     # Query debits over last 28 days to create 4 equal 7-day weekly buckets
     debits_qs = Transaction.objects.filter(
-        user=user, is_debit=True, date__gte=cutoff_30d
+        user=user, is_debit=True, is_deleted=False, is_duplicate=False, date__gte=cutoff_30d
     )
     total_spend = float(debits_qs.aggregate(s=Sum("amount"))["s"] or 0.0)
 

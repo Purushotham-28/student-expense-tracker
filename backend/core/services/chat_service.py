@@ -206,7 +206,7 @@ def execute_chat_tool(user: User, tool_name: str, tool_args: Dict[str, Any]) -> 
             start_date_str = tool_args.get("start_date")
             end_date_str = tool_args.get("end_date")
 
-            qs = Transaction.objects.filter(user=user, is_debit=True)
+            qs = Transaction.objects.filter(user=user, is_debit=True, is_deleted=False, is_duplicate=False)
 
             if cat and cat.lower() != "all":
                 qs = qs.filter(category__iexact=cat)

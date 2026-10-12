@@ -154,7 +154,8 @@ class TransactionSerializer(serializers.ModelSerializer):
             'id', 'date', 'time', 'amount', 'is_debit',
             'payee_name', 'upi_id', 'remark',
             'category', 'confidence', 'status', 'source',
-            'payment_mode', 'categorization_layer', 'created_at',
+            'payment_mode', 'categorization_layer',
+            'is_duplicate', 'is_deleted', 'deleted_at', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
 
@@ -169,17 +170,20 @@ class ManualExpenseSerializer(serializers.Serializer):
 
 
 class StatementSerializer(serializers.ModelSerializer):
-    transactions = TransactionSerializer(many=True, read_only=True)
+    transactions = serializers.SerializerMethodField()
 
     class Meta:
         model = Statement
         fields = [
             'id', 'original_filename', 'file_type', 'bank_format',
-            'status', 'error_message', 'transaction_count',
-            'date_from', 'date_to', 'uploaded_at', 'processed_at',
-            'transactions',
+            'status', 'error_message', 'transaction_count', 'duplicate_count',
+            'date_from', 'date_to', 'is_deleted', 'deleted_at',
+            'uploaded_at', 'processed_at', 'transactions',
         ]
         read_only_fields = fields
+
+    def get_transactions(self, obj):
+        return TransactionSerializer(obj.transactions.filter(is_deleted=False), many=True).data
 
 
 class StatementSummarySerializer(serializers.ModelSerializer):
@@ -189,8 +193,9 @@ class StatementSummarySerializer(serializers.ModelSerializer):
         model = Statement
         fields = [
             'id', 'original_filename', 'file_type', 'bank_format',
-            'status', 'error_message', 'transaction_count',
-            'date_from', 'date_to', 'uploaded_at', 'processed_at',
+            'status', 'error_message', 'transaction_count', 'duplicate_count',
+            'date_from', 'date_to', 'is_deleted', 'deleted_at',
+            'uploaded_at', 'processed_at',
         ]
         read_only_fields = fields
 

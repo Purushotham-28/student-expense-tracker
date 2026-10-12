@@ -54,8 +54,11 @@ class Statement(models.Model):
     )
     error_message = models.TextField(blank=True)
     transaction_count = models.IntegerField(default=0)
+    duplicate_count = models.IntegerField(default=0)
     date_from = models.DateField(null=True, blank=True)
     date_to = models.DateField(null=True, blank=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
 
@@ -78,6 +81,7 @@ class Transaction(models.Model):
         CATEGORISED = "categorised", "Categorised"
         CONFIRMED = "confirmed", "Confirmed"
         IGNORED = "ignored", "Ignored"
+        DUPLICATE = "duplicate", "Duplicate"
 
     statement = models.ForeignKey(
         Statement, on_delete=models.CASCADE, related_name="transactions",
@@ -109,6 +113,9 @@ class Transaction(models.Model):
         choices=ParseStatus.choices,
         default=ParseStatus.PENDING,
     )
+    is_duplicate = models.BooleanField(default=False, db_index=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { statementService } from '../api';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 import './Upload.css';
 
 const ACCEPTED_TYPES = [
@@ -369,8 +370,12 @@ export default function Upload() {
 function PastStatements() {
   const [statements, setStatements] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [stmtToDelete, setStmtToDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
-  React.useEffect(() => {
+  const loadStatements = useCallback(() => {
+    setLoading(true);
     statementService.list()
       .then((data) => {
         setStatements(Array.isArray(data) ? data : data.results || []);
@@ -378,6 +383,26 @@ function PastStatements() {
       .catch(() => setStatements([]))
       .finally(() => setLoading(false));
   }, []);
+
+  React.useEffect(() => {
+    loadStatements();
+  }, [loadStatements]);
+
+  const handleDeleteStatement = async () => {
+    if (!stmtToDelete) return;
+    setIsDeleting(true);
+    try {
+      const res = await statementService.delete(stmtToDelete.id);
+      setToastMessage(res.message || 'Statement deleted successfully.');
+      setTimeout(() => setToastMessage(''), 4000);
+      setStmtToDelete(null);
+      loadStatements();
+    } catch (err) {
+      alert(err?.response?.data?.error || 'Failed to delete statement.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -394,6 +419,21 @@ function PastStatements() {
 
   return (
     <div className="past-statements glass-panel">
+      {toastMessage && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          background: 'rgba(16, 185, 129, 0.2)',
+          border: '1px solid #10b981',
+          borderRadius: '8px',
+          color: '#34d399',
+          marginBottom: '1rem',
+          fontSize: '0.88rem',
+          fontWeight: 600,
+        }}>
+          {toastMessage}
+        </div>
+      )}
+
       <div className="chart-header">
         <h3 className="chart-title">Previous Uploads</h3>
         <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{statements.length} statement(s)</span>
@@ -408,6 +448,7 @@ function PastStatements() {
               <th>Date Range</th>
               <th>Status</th>
               <th>Uploaded</th>
+              <th style={{ width: '80px', textAlign: 'center' }}>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -420,7 +461,14 @@ function PastStatements() {
                 <td>
                   <span className="format-badge">{stmt.bank_format?.replace(/_/g, ' ').toUpperCase() || '—'}</span>
                 </td>
-                <td style={{ fontWeight: 700, color: '#fff' }}>{stmt.transaction_count}</td>
+                <td style={{ fontWeight: 700, color: '#fff' }}>
+                  {stmt.transaction_count}
+                  {stmt.duplicate_count > 0 && (
+                    <span style={{ fontSize: '0.75rem', color: '#f59e0b', marginLeft: '0.35rem' }}>
+                      ({stmt.duplicate_count} dup)
+                    </span>
+                  )}
+                </td>
                 <td style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
                   {stmt.date_from && stmt.date_to
                     ? `${new Date(stmt.date_from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${new Date(stmt.date_to).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
@@ -437,11 +485,53 @@ function PastStatements() {
                     hour: '2-digit', minute: '2-digit',
                   })}
                 </td>
+                <td style={{ textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => setStmtToDelete(stmt)}
+                    title="Delete entire statement"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#94a3b8',
+                      cursor: 'pointer',
+                      fontSize: '1rem',
+                      padding: '0.35rem 0.5rem',
+                      borderRadius: '6px',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+                      e.currentTarget.style.color = '#ef4444';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.color = '#94a3b8';
+                    }}
+                  >
+                    🗑️
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      <DeleteConfirmationModal
+        isOpen={Boolean(stmtToDelete)}
+        onClose={() => setStmtToDelete(null)}
+        onConfirm={handleDeleteStatement}
+        title="Delete Entire Statement"
+        isStatement={true}
+        itemCount={stmtToDelete?.transaction_count || 1}
+        message={
+          stmtToDelete
+            ? `Are you sure you want to delete statement "${stmtToDelete.original_filename}"? This will soft-delete the statement and all of its ${stmtToDelete.transaction_count} transaction(s).`
+            : undefined
+        }
+        isLoading={isDeleting}
+      />
     </div>
   );
 }
