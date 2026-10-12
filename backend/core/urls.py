@@ -13,6 +13,7 @@ from .views import (
     categorize_transaction_view,
     list_transactions_view,
     confirm_transaction_view,
+    manual_transaction_view,
     runway_view,
     whatif_view,
     goals_view,
@@ -48,6 +49,7 @@ urlpatterns = [
     # Payee Mappings & Categorization
     re_path(r'^payee-mappings/?$', payee_mappings_view, name='payee_mappings'),
     re_path(r'^transactions/?$', list_transactions_view, name='transaction_list'),
+    re_path(r'^transactions/manual/?$', manual_transaction_view, name='transaction_manual'),
     re_path(r'^transactions/(?P<pk>\d+)/categorize/?$', categorize_transaction_view, name='transaction_categorize'),
     re_path(r'^transactions/(?P<pk>\d+)/confirm/?$', confirm_transaction_view, name='transaction_confirm'),
 

@@ -1,3 +1,5 @@
+from decimal import Decimal
+from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
@@ -151,9 +153,19 @@ class TransactionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'date', 'time', 'amount', 'is_debit',
             'payee_name', 'upi_id', 'remark',
-            'category', 'confidence', 'status', 'created_at',
+            'category', 'confidence', 'status', 'source',
+            'payment_mode', 'categorization_layer', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class ManualExpenseSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    category = serializers.ChoiceField(choices=ExpenseCategory.choices)
+    payee_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    date = serializers.DateField(required=False, default=date.today)
+    payment_mode = serializers.CharField(max_length=50, required=False, default="UPI")
+    save_mapping = serializers.BooleanField(required=False, default=False)
 
 
 class StatementSerializer(serializers.ModelSerializer):

@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { transactionService } from '../api';
+import AddExpenseModal from '../components/AddExpenseModal';
+import QuickExpenseBar from '../components/QuickExpenseBar';
 import './Verify.css';
 
 const CATEGORIES = [
@@ -10,6 +12,8 @@ const CATEGORIES = [
   { name: 'Subscriptions', icon: '📺', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.12)' },
   { name: 'Rent/Hostel', icon: '🏠', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.12)' },
   { name: 'Academics', icon: '📚', color: '#06b6d4', bg: 'rgba(6, 182, 212, 0.12)' },
+  { name: 'Stationery', icon: '✏️', color: '#14b8a6', bg: 'rgba(20, 184, 166, 0.12)' },
+  { name: 'Utilities', icon: '💡', color: '#eab308', bg: 'rgba(234, 179, 8, 0.12)' },
   { name: 'Friend/Split', icon: '👥', color: '#ec4899', bg: 'rgba(236, 72, 153, 0.12)' },
   { name: 'Entertainment', icon: '🎬', color: '#f97316', bg: 'rgba(249, 115, 22, 0.12)' },
   { name: 'Other', icon: '🏷️', color: '#64748b', bg: 'rgba(100, 116, 139, 0.12)' },
@@ -25,6 +29,7 @@ export default function Verify() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
 
   // Per-payee group state: applyToAll checkbox (default true per payee)
   const [applyToAllMap, setApplyToAllMap] = useState({});
@@ -209,14 +214,43 @@ export default function Verify() {
           </p>
         </div>
 
-        <button
-          type="button"
-          className="btn-upload-more"
-          onClick={() => navigate('/upload')}
-        >
-          + Upload Statement
-        </button>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <button
+            type="button"
+            className="btn-add-expense"
+            id="btn-verify-add-expense"
+            onClick={() => setIsAddExpenseModalOpen(true)}
+            style={{
+              background: 'linear-gradient(135deg, #10b981, #059669)',
+              color: '#fff',
+              border: 'none',
+              padding: '0.65rem 1.15rem',
+              borderRadius: '10px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+            }}
+          >
+            ➕ Add Expense
+          </button>
+          <button
+            type="button"
+            className="btn-upload-more"
+            onClick={() => navigate('/upload')}
+          >
+            + Upload Statement
+          </button>
+        </div>
       </div>
+
+      {/* ── Quick Expense Logging ── */}
+      <QuickExpenseBar
+        onExpenseAdded={fetchTransactions}
+        onOpenFullModal={() => setIsAddExpenseModalOpen(true)}
+      />
 
       {/* Routing Summary Cards */}
       <div className="verify-stats-grid">
@@ -549,6 +583,13 @@ export default function Verify() {
           })}
         </div>
       )}
+
+      {/* ── Add Expense Modal ── */}
+      <AddExpenseModal
+        isOpen={isAddExpenseModalOpen}
+        onClose={() => setIsAddExpenseModalOpen(false)}
+        onExpenseAdded={fetchTransactions}
+      />
     </div>
   );
 }

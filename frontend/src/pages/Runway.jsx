@@ -21,6 +21,8 @@ const CATEGORIES_LIST = [
   { name: 'Travel', icon: '🚗', color: '#3b82f6', maxReduce: 70 },
   { name: 'Friend/Split', icon: '👥', color: '#ec4899', maxReduce: 70 },
   { name: 'Academics', icon: '📚', color: '#06b6d4', maxReduce: 50 },
+  { name: 'Stationery', icon: '✏️', color: '#14b8a6', maxReduce: 50 },
+  { name: 'Utilities', icon: '💡', color: '#eab308', maxReduce: 40 },
   { name: 'Rent/Hostel', icon: '🏠', color: '#ef4444', maxReduce: 30 },
   { name: 'Other', icon: '🏷️', color: '#64748b', maxReduce: 60 },
 ];
@@ -42,6 +44,8 @@ export default function Runway() {
     Travel: 0,
     'Friend/Split': 0,
     Academics: 0,
+    Stationery: 0,
+    Utilities: 0,
     'Rent/Hostel': 0,
     Other: 0,
   });

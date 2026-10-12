@@ -12,6 +12,7 @@ from .serializers import (
     UserProfileSerializer,
     StatementSerializer,
     StatementSummarySerializer,
+    ManualExpenseSerializer,
 )
 from .services.statement_service import validate_upload, process_uploaded_statement
 
@@ -360,6 +361,70 @@ def list_transactions_view(request):
         'counts': counts,
         'results': TransactionSerializer(page_items, many=True).data,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def manual_transaction_view(request):
+    """
+    POST /api/transactions/manual/
+    Creates a single manual expense entry for fast daily logging.
+    source="manual", status="confirmed", confidence=1.0.
+    Skips the auto-categorization pipeline because user selected category directly.
+    Checks if payee has PayeeMapping; if not, offers to save it as a mapping for future auto-categorization.
+    """
+    serializer = ManualExpenseSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            'error': 'Invalid expense data',
+            'details': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    data = serializer.validated_data
+    amount = data['amount']
+    category = data['category']
+    payee_name = data.get('payee_name', '').strip()
+    txn_date = data.get('date') or date.today()
+    payment_mode = data.get('payment_mode') or 'UPI'
+    save_mapping = data.get('save_mapping', False)
+
+    tx = Transaction.objects.create(
+        user=request.user,
+        amount=amount,
+        category=category,
+        payee_name=payee_name,
+        date=txn_date,
+        is_debit=True,
+        source="manual",
+        payment_mode=payment_mode,
+        status=Transaction.ParseStatus.CONFIRMED,
+        confidence=1.0,
+        categorization_layer="manual",
+        remark=f"Manual entry ({payment_mode})" if not payee_name else f"{payee_name} ({payment_mode})"
+    )
+
+    offer_save_mapping = False
+    from .services.categorization_service import normalize_payee
+    payee_key = normalize_payee(payee_name) if payee_name else ""
+    if payee_key:
+        mapping_exists = PayeeMapping.objects.filter(user=request.user, payee_key=payee_key).exists()
+        if not mapping_exists:
+            if save_mapping:
+                PayeeMapping.objects.create(
+                    user=request.user,
+                    payee_key=payee_key,
+                    category=category,
+                    times_confirmed=1,
+                )
+            else:
+                offer_save_mapping = True
+
+    return Response({
+        'message': 'Expense recorded successfully',
+        'transaction': TransactionSerializer(tx).data,
+        'offer_save_mapping': offer_save_mapping,
+        'payee_key': payee_key,
+    }, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])

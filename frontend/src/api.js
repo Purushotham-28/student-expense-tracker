@@ -260,6 +260,15 @@ export const transactionService = {
   },
 
   /**
+   * Add a manual expense transaction.
+   * payload: { amount, category, payee_name, date, payment_mode, save_mapping }
+   */
+  async addManual(data) {
+    const response = await api.post('transactions/manual/', data);
+    return response.data;
+  },
+
+  /**
    * Re-run hybrid categorization on a transaction.
    */
   async categorize(id) {

@@ -17,6 +17,8 @@ import {
 } from 'recharts';
 import { dashboardService } from '../api';
 import FinancialHealthCard from '../components/FinancialHealthCard';
+import AddExpenseModal from '../components/AddExpenseModal';
+import QuickExpenseBar from '../components/QuickExpenseBar';
 import './Dashboard.css';
 
 export default function Dashboard({ userProfile, onOpenBudgetModal }) {
@@ -27,6 +29,7 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   const [error, setError] = useState('');
   const [dismissedAlerts, setDismissedAlerts] = useState({});
   const [categoryView, setCategoryView] = useState('pie'); // 'pie' | 'bars'
+  const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
 
   const fetchDashboardData = useCallback(async () => {
     setLoading(true);
@@ -153,6 +156,15 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
         <div className="dashboard-actions">
           <button
             type="button"
+            onClick={() => setIsAddExpenseModalOpen(true)}
+            className="btn-primary"
+            id="btn-dash-add-expense"
+            style={{ background: 'linear-gradient(135deg, #10b981, #059669)', border: 'none', color: '#fff', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.35)' }}
+          >
+            ➕ Add Expense
+          </button>
+          <button
+            type="button"
             onClick={onOpenBudgetModal}
             className="btn-secondary"
             id="btn-adjust-budget-limit"
@@ -165,6 +177,12 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
           </Link>
         </div>
       </div>
+
+      {/* ── Quick Expense Logging ── */}
+      <QuickExpenseBar
+        onExpenseAdded={fetchDashboardData}
+        onOpenFullModal={() => setIsAddExpenseModalOpen(true)}
+      />
 
       {/* ── Active Budget Alerts (80% and 100% threshold crossings) ── */}
       {visibleAlerts.length > 0 && (
@@ -744,6 +762,13 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
           </div>
         )}
       </section>
+
+      {/* ── Add Expense Modal ── */}
+      <AddExpenseModal
+        isOpen={isAddExpenseModalOpen}
+        onClose={() => setIsAddExpenseModalOpen(false)}
+        onExpenseAdded={fetchDashboardData}
+      />
     </div>
   );
 }

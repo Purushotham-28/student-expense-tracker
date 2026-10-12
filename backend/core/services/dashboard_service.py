@@ -28,15 +28,17 @@ from .categorization_service import CATEGORIES
 
 # Default campus budget share distribution per category
 CATEGORY_BENCHMARK_SHARES = {
-    'Food': 0.30,               # 30% of monthly budget
-    'Rent/Hostel': 0.25,        # 25%
-    'Groceries/Shopping': 0.15, # 15%
-    'Travel': 0.10,             # 10%
-    'Entertainment': 0.08,      # 8%
-    'Academics': 0.08,          # 8%
-    'Subscriptions': 0.04,      # 4%
-    'Friend/Split': 0.05,       # 5%
-    'Other': 0.05,              # 5%
+    'Food': 0.28,               # 28% of monthly budget
+    'Rent/Hostel': 0.22,        # 22%
+    'Groceries/Shopping': 0.12, # 12%
+    'Utilities': 0.08,          # 8%
+    'Travel': 0.08,             # 8%
+    'Entertainment': 0.06,      # 6%
+    'Academics': 0.06,          # 6%
+    'Stationery': 0.04,         # 4%
+    'Subscriptions': 0.03,      # 3%
+    'Friend/Split': 0.04,       # 4%
+    'Other': 0.04,              # 4%
 }
 
 CATEGORY_METADATA = {
@@ -46,6 +48,8 @@ CATEGORY_METADATA = {
     'Subscriptions': {'icon': '📺', 'color': '#8b5cf6'},
     'Rent/Hostel': {'icon': '🏠', 'color': '#ef4444'},
     'Academics': {'icon': '📚', 'color': '#06b6d4'},
+    'Stationery': {'icon': '✏️', 'color': '#14b8a6'},
+    'Utilities': {'icon': '💡', 'color': '#eab308'},
     'Friend/Split': {'icon': '👥', 'color': '#ec4899'},
     'Entertainment': {'icon': '🎬', 'color': '#f97316'},
     'Other': {'icon': '🏷️', 'color': '#64748b'},
