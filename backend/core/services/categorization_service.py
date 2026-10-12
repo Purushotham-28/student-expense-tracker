@@ -33,8 +33,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
+from rapidfuzz import fuzz
+import json
 
-from ..models import ExpenseCategory, PayeeMapping, Transaction
+from ..models import ExpenseCategory, PayeeMapping, Transaction, MerchantKeyword
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,102 @@ _CACHED_MODEL: Optional[Pipeline] = None
 
 # List of all categories
 CATEGORIES: List[str] = [c.value for c in ExpenseCategory]
+
+# In-memory cached merchant keywords
+_MERCHANT_KEYWORDS_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+def get_merchant_keywords() -> List[Dict[str, Any]]:
+    """
+    Loads merchant keyword dictionary.
+    Priority:
+      1. Database table MerchantKeyword
+      2. JSON fixture (merchant_keywords.json)
+    Cached in memory for high-performance classification.
+    """
+    global _MERCHANT_KEYWORDS_CACHE
+    if _MERCHANT_KEYWORDS_CACHE is not None:
+        return _MERCHANT_KEYWORDS_CACHE
+
+    keywords = []
+    # 1. Try DB
+    try:
+        db_entries = list(MerchantKeyword.objects.all().values("keyword", "category", "priority"))
+        if db_entries:
+            keywords = db_entries
+    except Exception:
+        pass
+
+    # 2. Try JSON fixture
+    if not keywords:
+        fixture_path = os.path.join(os.path.dirname(__file__), "..", "fixtures", "merchant_keywords.json")
+        if os.path.exists(fixture_path):
+            try:
+                with open(fixture_path, "r", encoding="utf-8") as f:
+                    keywords = json.load(f)
+                # Seed into DB if accessible
+                try:
+                    if MerchantKeyword.objects.count() == 0:
+                        objs = [
+                            MerchantKeyword(
+                                keyword=item["keyword"],
+                                category=item["category"],
+                                priority=item.get("priority", 10),
+                            )
+                            for item in keywords
+                        ]
+                        MerchantKeyword.objects.bulk_create(objs, ignore_conflicts=True)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning("Failed loading merchant_keywords.json: %s", e)
+
+    # Sort descending by priority, then by length of keyword
+    keywords.sort(key=lambda x: (x.get("priority", 10), len(x["keyword"])), reverse=True)
+    _MERCHANT_KEYWORDS_CACHE = keywords
+    return _MERCHANT_KEYWORDS_CACHE
+
+
+def reload_merchant_keywords() -> List[Dict[str, Any]]:
+    """Force reloads merchant keyword dictionary from storage."""
+    global _MERCHANT_KEYWORDS_CACHE
+    _MERCHANT_KEYWORDS_CACHE = None
+    return get_merchant_keywords()
+
+
+def match_merchant_keyword(
+    payee_name: str | None,
+    remark: str | None,
+    upi_id: str | None = None,
+) -> Tuple[Optional[str], float]:
+    """
+    First-class merchant keyword matching signal.
+    Case-insensitively checks normalized payee, UPI address, and remark.
+    Uses substring matching first, followed by rapidfuzz partial matching.
+    """
+    text = f"{payee_name or ''} {upi_id or ''} {remark or ''}".strip().lower()
+    if not text:
+        return None, 0.0
+
+    keywords = get_merchant_keywords()
+
+    # Pass 1: Substring match (ordered by priority desc, length desc)
+    for item in keywords:
+        kw = item["keyword"].strip().lower()
+        if kw and kw in text:
+            logger.info("Merchant keyword match [substring]: '%s' in '%s' -> %s", kw, text[:50], item["category"])
+            return item["category"], 0.95
+
+    # Pass 2: Fuzzy match via rapidfuzz
+    for item in keywords:
+        kw = item["keyword"].strip().lower()
+        if len(kw) >= 4:
+            score = fuzz.partial_ratio(kw, text)
+            if score >= 88:
+                logger.info("Merchant keyword match [fuzzy score=%d]: '%s' in '%s' -> %s", score, kw, text[:50], item["category"])
+                return item["category"], 0.92
+
+    return None, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +702,94 @@ def generate_synthetic_dataset() -> pd.DataFrame:
             "category": ExpenseCategory.OTHER,
         })
 
+    # 10. STATIONERY (30 items: Xerox, Printouts, Notebooks, Book World, Depot)
+    stationery_samples = [
+        ("Balaji Book World", "bookworld@paytm", "Semester engineering textbooks spiral binding", 450.0, 11, 1, 2),
+        ("Parimala Internet & Xerox", "parimaxerox@upi", "Lab manual printout xerox 50 pages", 50.0, 10, 2, 8),
+        ("College Book Depot", "bookdepot@sbi", "Drawing sheets engineering instrument box", 280.0, 12, 0, 3),
+        ("Students Stationery", "stationerystore@paytm", "Classmate notebooks pens highlighters", 160.0, 14, 3, 4),
+        ("Universal Xerox", "universalxerox@upi", "Project report black book hardcover binding", 350.0, 16, 4, 1),
+        ("Book World Store", "bookworld@axisbank", "GATE exam reference guide mathematics", 550.0, 17, 5, 1),
+        ("Campus Print Kiosk", "printpoint@upi", "Color printouts assignment presentation", 40.0, 9, 2, 6),
+        ("Sree Sai Stationery", "saisaistore@paytm", "Sticky notes white board marker pens", 95.0, 15, 1, 3),
+        ("National Book House", "nationalbooks@hdfcbank", "Competitive programming book algorithms", 620.0, 18, 6, 1),
+        ("Xerox Hub", "xeroxhub@upi", "Previous year question papers xerox copies", 30.0, 13, 3, 9),
+        ("Pragati Book Depot", "pragatibooks@kotak", "Physics and chemistry textbook guide", 480.0, 11, 4, 1),
+        ("Hi-Tech Digital Xerox", "hitechxerox@paytm", "A3 poster printout civil engineering", 80.0, 14, 5, 2),
+        ("Premier Stationery", "premierstat@upi", "Scientific calculator Casio fx-991CW", 1150.0, 12, 0, 1),
+        ("Shree Book World", "shreebooks@okaxis", "GRE verbal practice flashcards book", 700.0, 16, 2, 1),
+        ("Quick Print Xerox", "quickprint@upi", "Resume copies and certificate color print", 45.0, 11, 1, 5),
+        ("Vidyarthi Book Centre", "vidyarthibooks@sbi", "Engineering graphics mini drafter", 340.0, 10, 3, 1),
+        ("Color Xerox Studio", "colorxerox@paytm", "Portfolio design presentation prints", 120.0, 15, 4, 2),
+        ("Paper & Pen Stationery", "paperpen@upi", "Parker pen and leather diary notebook", 220.0, 17, 6, 1),
+        ("City Book World", "citybooks@icici", "Data structures and algorithms in Python", 580.0, 13, 5, 1),
+        ("Modern Xerox Center", "modernxerox@upi", "Project synopsis documentation print", 60.0, 14, 2, 4),
+        ("Gyan Book Depot", "gyanbooks@paytm", "Quantitative aptitude RS Aggarwal book", 490.0, 16, 1, 1),
+        ("Spiral Xerox Corner", "spiralxerox@upi", "Notes spiral binding 2 volumes", 70.0, 12, 3, 3),
+        ("Sri Krishna Stationery", "krishnastationery@upi", "Geometry box protractor compass set", 110.0, 15, 0, 2),
+        ("Mega Book World", "megabookworld@hdfcbank", "Machine learning hands-on reference", 850.0, 18, 4, 1),
+        ("Campus Xerox Express", "xeroxexpress@paytm", "Urgent exam hall ticket admit card print", 20.0, 8, 1, 7),
+        ("Pen Hospital Stationery", "penhospital@upi", "Refills ink cartridge fountain pen", 65.0, 16, 5, 2),
+        ("Royal Book House", "royalbooks@okaxis", "Communication skills and aptitude workbook", 320.0, 14, 6, 1),
+        ("Fast Print & Xerox", "fastprint@upi", "Seminar slides printout booklet", 85.0, 13, 4, 3),
+        ("Classic Stationery", "classicstat@paytm", "Folders file covers plastic envelopes", 75.0, 11, 2, 4),
+        ("Alpha Xerox Point", "alphaxerox@upi", "Lecture notes compilation photocopies", 40.0, 17, 3, 6),
+    ]
+    for name, upi, remark, amt, hr, dow, freq in stationery_samples:
+        rows.append({
+            "amount": amt,
+            "amount_bucket": get_amount_bucket(amt),
+            "hour_of_day": hr,
+            "day_of_week": dow,
+            "payee_frequency": freq,
+            "text": f"{name} {upi} {remark}".strip(),
+            "category": ExpenseCategory.STATIONERY,
+        })
+
+    # 11. UTILITIES (30 items: Electricity, Recharge, Broadband, DTH, Water, Gas)
+    utility_samples = [
+        ("Airtel Prepaid Recharge", "airtel@axisbank", "Monthly smartphone 1.5GB daily pack recharge", 299.0, 10, 0, 2),
+        ("Jio Prepaid Recharge", "jio.recharge@paytm", "Jio 5G true unlimited 84 days recharge", 666.0, 11, 1, 1),
+        ("Bescom Electricity Bill", "bescom@sbi", "Room hostel electricity bill payment", 420.0, 15, 2, 1),
+        ("ACT Fibernet Broadband", "actcorp@hdfcbank", "Monthly hostel room high-speed internet wifi", 825.0, 12, 0, 1),
+        ("Tata Play DTH", "tataplay@icici", "Monthly sports channel DTH recharge", 250.0, 19, 5, 1),
+        ("Vi Prepaid Recharge", "myvi@paytm", "Vi prepaid mobile recharge validity pack", 199.0, 14, 3, 1),
+        ("Airtel Xstream Fiber", "airtelbroadband@axisbank", "Broadband internet wifi bill payment", 799.0, 11, 4, 1),
+        ("Jio Fiber Broadband", "jiofiber@paytm", "JioFiber unlimited 100Mbps monthly plan", 699.0, 16, 6, 1),
+        ("HP Gas Cylinder", "hpgas@sbi", "Domestic LPG cooking gas cylinder refill", 850.0, 10, 2, 1),
+        ("Indane Gas Refill", "indanegas@icici", "LPG cylinder booking online payment", 840.0, 14, 5, 1),
+        ("MSEDCL Electricity", "msedcl@hdfcbank", "Apartment shared electricity power bill", 580.0, 17, 1, 1),
+        ("Discom Power Utility", "discom@upi", "Electricity prepaid submeter recharge", 300.0, 13, 3, 2),
+        ("Water Tanker Supply", "watertanker@paytm", "Shared hostel water tanker delivery share", 200.0, 8, 4, 2),
+        ("Municipal Water Bill", "waterboard@sbi", "Quarterly drinking water supply tariff", 150.0, 12, 1, 1),
+        ("Airtel DTH Digital TV", "airteldth@axisbank", "DTH satellite set top box recharge", 280.0, 20, 6, 1),
+        ("Sun Direct DTH", "sundirect@paytm", "Regional language DTH package recharge", 210.0, 18, 0, 1),
+        ("Hathway Broadband", "hathway@hdfcbank", "Cable internet connection monthly renewal", 599.0, 15, 2, 1),
+        ("BSNL Landline Fiber", "bsnl.bharatfiber@sbi", "BSNL Bharat Fiber broadband payment", 499.0, 11, 3, 1),
+        ("Bharat Gas Online", "bharatgas@okaxis", "Kitchen LPG cylinder delivery booking", 845.0, 9, 4, 1),
+        ("TSSPDCL Power", "tsspdcl@upi", "State electricity distribution bill pay", 390.0, 16, 2, 1),
+        ("UPPCL Electricity Bill", "uppcl@sbi", "Power corp monthly meter bill", 460.0, 14, 0, 1),
+        ("Dish TV Recharge", "dishtv@paytm", "Dish TV entertainment pack topup", 220.0, 19, 5, 1),
+        ("Excitel Broadband", "excitel@icici", "Hostel wifi unlimited streaming bill", 499.0, 12, 6, 1),
+        ("You Broadband", "youbroadband@axisbank", "Monthly internet wifi subscription", 650.0, 17, 1, 1),
+        ("Adani Electricity", "adanielectricity@hdfcbank", "Power bill payment online", 520.0, 15, 3, 1),
+        ("Airtel Postpaid Bill", "airtel@axisbank", "Family plan mobile postpaid bill share", 499.0, 13, 5, 1),
+        ("Jio Postpaid Plus", "jiopostpaid@paytm", "Monthly postpaid mobile statement bill", 399.0, 10, 4, 1),
+        ("Wi-Fi Router Recharge", "localcablewifi@upi", "Local area network wifi internet coupon", 300.0, 18, 2, 2),
+        ("Piped Natural Gas PNG", "mglpng@sbi", "Mahanagar Gas PNG pipeline bill", 320.0, 11, 1, 1),
+        ("Society Maintenance & Water", "societymaint@upi", "Hostel society common electricity share", 250.0, 16, 0, 1),
+    ]
+    for name, upi, remark, amt, hr, dow, freq in utility_samples:
+        rows.append({
+            "amount": amt,
+            "amount_bucket": get_amount_bucket(amt),
+            "hour_of_day": hr,
+            "day_of_week": dow,
+            "payee_frequency": freq,
+            "text": f"{name} {upi} {remark}".strip(),
+            "category": ExpenseCategory.UTILITIES,
+        })
+
     return pd.DataFrame(rows)
 
 
@@ -754,21 +940,19 @@ def categorize_transaction(
     save: bool = True,
 ) -> Tuple[str, float, str]:
     """
-    Core hybrid categorizer:
-      1. Look up PayeeMapping for this user + payee_key. If found → confidence 1.0.
-      2. Otherwise, extract features and run calibrated ML classifier → category + confidence.
-      3. Routes status based on confidence:
-         confidence >= 0.80 -> 'auto'
-         0.50-0.80          -> 'verify'
-         < 0.50             -> 'pending'
+    Three-layer categorization pipeline:
+      Layer 1 — Saved payee mapping (user-specific precedence, conf=1.0)
+      Layer 2 — Merchant keyword dictionary match (conf=0.95)
+      Layer 3 — Calibrated ML classifier with confidence routing
+    Logs which of the three layers produced each transaction's category.
 
     Returns:
-      (category: str, confidence: float, source: 'payee_mapping' | 'ml_model')
+      (category: str, confidence: float, source: 'payee_mapping' | 'merchant_keyword' | 'ml_model')
     """
     user = getattr(transaction, "user", None)
     payee_key = normalize_payee(transaction.payee_name, transaction.upi_id)
 
-    # 1 — Check user's saved PayeeMapping
+    # Layer 1 — Check user's saved PayeeMapping
     if user and payee_key:
         mapping = PayeeMapping.objects.filter(
             user=user, payee_key=payee_key
@@ -781,10 +965,33 @@ def categorize_transaction(
                 transaction.category = cat
                 transaction.confidence = conf
                 transaction.status = routed_status
-                transaction.save(update_fields=["category", "confidence", "status"])
+                transaction.categorization_layer = "payee_mapping"
+                transaction.save(update_fields=["category", "confidence", "status", "categorization_layer"])
+            logger.info(
+                "Categorized Tx #%s via [Layer 1: payee_mapping] -> %s (conf: %.2f)",
+                getattr(transaction, "pk", "new"), cat, conf
+            )
             return cat, conf, "payee_mapping"
 
-    # 2 — Run ML Classifier
+    # Layer 2 — Merchant Keyword Dictionary Match
+    kw_category, kw_conf = match_merchant_keyword(
+        transaction.payee_name, transaction.remark, transaction.upi_id
+    )
+    if kw_category:
+        routed_status = route_status_from_confidence(kw_conf)
+        if save:
+            transaction.category = kw_category
+            transaction.confidence = kw_conf
+            transaction.status = routed_status
+            transaction.categorization_layer = "merchant_keyword"
+            transaction.save(update_fields=["category", "confidence", "status", "categorization_layer"])
+        logger.info(
+            "Categorized Tx #%s via [Layer 2: merchant_keyword] -> %s (conf: %.2f)",
+            getattr(transaction, "pk", "new"), kw_category, kw_conf
+        )
+        return kw_category, kw_conf, "merchant_keyword"
+
+    # Layer 3 — ML Classifier with confidence routing
     features = extract_features(transaction)
     df_feat = pd.DataFrame([features])
 
@@ -799,7 +1006,6 @@ def categorize_transaction(
     else:
         confidence = float(np.max(probs))
 
-    # Keep confidence bounded [0.0, 1.0] and rounded
     confidence = round(max(0.01, min(1.0, confidence)), 4)
     routed_status = route_status_from_confidence(confidence)
 
@@ -807,8 +1013,13 @@ def categorize_transaction(
         transaction.category = pred_category
         transaction.confidence = confidence
         transaction.status = routed_status
-        transaction.save(update_fields=["category", "confidence", "status"])
+        transaction.categorization_layer = "ml_model"
+        transaction.save(update_fields=["category", "confidence", "status", "categorization_layer"])
 
+    logger.info(
+        "Categorized Tx #%s via [Layer 3: ml_model] -> %s (conf: %.2f)",
+        getattr(transaction, "pk", "new"), pred_category, confidence
+    )
     return pred_category, confidence, "ml_model"
 
 

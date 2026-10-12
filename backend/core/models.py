@@ -76,10 +76,12 @@ class Transaction(models.Model):
         VERIFY = "verify", "Verify"
         PENDING = "pending", "Pending"
         CATEGORISED = "categorised", "Categorised"
+        CONFIRMED = "confirmed", "Confirmed"
         IGNORED = "ignored", "Ignored"
 
     statement = models.ForeignKey(
-        Statement, on_delete=models.CASCADE, related_name="transactions"
+        Statement, on_delete=models.CASCADE, related_name="transactions",
+        null=True, blank=True,
     )
     user = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name="transactions"
@@ -96,7 +98,10 @@ class Transaction(models.Model):
     remark = models.CharField(max_length=512, blank=True)
     raw_text = models.TextField(blank=True)
 
-    # AI-categorisation fields (populated in Phase 3 & 4)
+    # Categorisation & provenance
+    source = models.CharField(max_length=50, default="statement", help_text="statement, manual, chat, etc.")
+    payment_mode = models.CharField(max_length=20, default="UPI", blank=True, help_text="Cash, UPI, Card, etc.")
+    categorization_layer = models.CharField(max_length=50, default="ml_model", blank=True, help_text="payee_mapping, merchant_keyword, ml_model, manual")
     category = models.CharField(max_length=100, blank=True, null=True)
     confidence = models.FloatField(null=True, blank=True)
     status = models.CharField(
@@ -124,7 +129,26 @@ class ExpenseCategory(models.TextChoices):
     ACADEMICS = "Academics", "Academics"
     FRIEND_SPLIT = "Friend/Split", "Friend/Split"
     ENTERTAINMENT = "Entertainment", "Entertainment"
+    UTILITIES = "Utilities", "Utilities"
+    STATIONERY = "Stationery", "Stationery"
     OTHER = "Other", "Other"
+
+
+class MerchantKeyword(models.Model):
+    """
+    Keyword/substring lookup table mapped to ExpenseCategory.
+    Checked after user's PayeeMapping but before the ML classifier.
+    """
+    keyword = models.CharField(max_length=100, unique=True, db_index=True)
+    category = models.CharField(max_length=100, choices=ExpenseCategory.choices)
+    priority = models.IntegerField(default=10, help_text="Higher priority matches take precedence")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-priority", "keyword"]
+
+    def __str__(self):
+        return f"{self.keyword} -> {self.category} (priority {self.priority})"
 
 
 class PayeeMapping(models.Model):

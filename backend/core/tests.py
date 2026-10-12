@@ -485,17 +485,17 @@ class HybridCategorizationEngineTests(TestCase):
 
     def test_unmapped_transaction_returns_category_and_confidence_between_0_and_1(self):
         """
-        2. An unmapped transaction runs ML classifier, returns a valid category
-        and confidence between 0 and 1.
+        2. An unmapped transaction without keyword match runs ML classifier,
+        returns a valid category and confidence between 0 and 1.
         """
         tx = Transaction.objects.create(
             statement=self.statement,
             user=self.user,
             date=date(2026, 9, 20),
-            amount=Decimal("45.00"),
-            payee_name="Rapido Bike Taxi",
-            upi_id="rapido@upi",
-            remark="Rapido ride to college gate",
+            amount=Decimal("450.00"),
+            payee_name="UniqueUnlistedRecipient987",
+            upi_id="customuser987@bank",
+            remark="Payment for miscellaneous item",
         )
 
         category, confidence, source = categorize_transaction(tx, save=True)
@@ -512,10 +512,10 @@ class HybridCategorizationEngineTests(TestCase):
         self.assertIn(tx.status, [Transaction.ParseStatus.AUTO, Transaction.ParseStatus.VERIFY, Transaction.ParseStatus.PENDING])
 
     def test_synthetic_dataset_shape(self):
-        """Synthetic dataset has 270 rows covering all 9 categories (30 each)."""
+        """Synthetic dataset has 330 rows covering all 11 categories (30 each)."""
         df = generate_synthetic_dataset()
-        self.assertEqual(len(df), 270)
-        self.assertEqual(df["category"].nunique(), 9)
+        self.assertEqual(len(df), len(CATEGORIES) * 30)
+        self.assertEqual(df["category"].nunique(), len(CATEGORIES))
         for cat in CATEGORIES:
             self.assertEqual(len(df[df["category"] == cat]), 30)
 
