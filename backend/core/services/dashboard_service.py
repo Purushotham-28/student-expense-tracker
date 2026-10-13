@@ -58,26 +58,29 @@ CATEGORY_METADATA = {
 
 def get_available_months_for_user(user: User) -> List[str]:
     """
-    Returns a sorted list of unique months ('YYYY-MM') that have transactions
-    for this user (excluding soft-deleted and duplicates), plus the current month.
+    Returns a sorted list of unique months ('YYYY-MM') for the user to check in spending breakdown.
+    Includes all 12 calendar months for the current year (January through December),
+    plus all 12 calendar months for any other year where the user has recorded transactions.
     """
     today = date.today()
-    curr_key = f"{today.year:04d}-{today.month:02d}"
+    month_keys = set()
 
+    # All 12 calendar months of current year
+    for m in range(1, 13):
+        month_keys.add(f"{today.year:04d}-{m:02d}")
+
+    # Discover all years where transactions exist for this user
     tx_dates = Transaction.objects.filter(
         user=user,
         is_deleted=False,
-        is_duplicate=False,
         date__isnull=False,
     ).values_list("date", flat=True)
 
-    month_keys = set()
     for d in tx_dates:
         if d:
-            month_keys.add(f"{d.year:04d}-{d.month:02d}")
+            for m in range(1, 13):
+                month_keys.add(f"{d.year:04d}-{m:02d}")
 
-    # Always ensure current month is selectable
-    month_keys.add(curr_key)
     return sorted(list(month_keys))
 
 
@@ -89,14 +92,19 @@ def get_category_breakdown_for_month(
     """
     Computes category breakdown, budget adherence, and alerts for a given month and year.
     Defaults to the current month/year if not provided.
+    Supports month='all' to aggregate category breakdown across all months of a year (or all time).
     Filters out soft-deleted and duplicate transactions.
     """
     today = date.today()
 
+    is_all_months = False
+    if month is not None and str(month).lower() in ('all', 'all-months', 'total'):
+        is_all_months = True
+
     target_year = today.year
     target_month = today.month
 
-    if year is not None:
+    if year is not None and str(year).lower() != 'all':
         try:
             y = int(year)
             if 2000 <= y <= 2100:
@@ -104,7 +112,7 @@ def get_category_breakdown_for_month(
         except (ValueError, TypeError):
             pass
 
-    if month is not None:
+    if not is_all_months and month is not None:
         try:
             m = int(month)
             if 1 <= m <= 12:
@@ -112,42 +120,63 @@ def get_category_breakdown_for_month(
         except (ValueError, TypeError):
             pass
 
-    is_current_month = (target_year == today.year and target_month == today.month)
-    start_of_month = date(target_year, target_month, 1)
-    _, days_in_month = calendar.monthrange(target_year, target_month)
-    end_of_month = date(target_year, target_month, days_in_month)
-
     profile, _ = UserProfile.objects.get_or_create(
         user=user,
         defaults={'college_roll_number': f'ROLL-{user.id}', 'monthly_budget_limit': 15000.0},
     )
     monthly_budget_limit = float(profile.monthly_budget_limit or 15000.0)
     monthly_income = float(profile.monthly_income or 0.0)
-
-    # Days passed / remaining
-    if is_current_month:
-        effective_end = today
-        days_passed = max(1, today.day)
-        days_remaining = max(0, days_in_month - today.day)
-    elif date(target_year, target_month, 1) > today:
-        effective_end = end_of_month
-        days_passed = 0
-        days_remaining = days_in_month
-    else:
-        effective_end = end_of_month
-        days_passed = days_in_month
-        days_remaining = 0
-
     all_user_txs = Transaction.objects.filter(user=user, is_deleted=False, is_duplicate=False)
-    month_txs = all_user_txs.filter(
-        is_debit=True,
-        date__gte=start_of_month,
-        date__lte=effective_end,
-    )
+
+    if is_all_months:
+        is_current_month = False
+        start_of_month = date(target_year, 1, 1)
+        end_of_month = date(target_year, 12, 31)
+        days_in_month = 365
+        days_passed = days_in_month if target_year < today.year else today.timetuple().tm_yday
+        days_remaining = max(0, days_in_month - days_passed)
+        effective_budget_limit = monthly_budget_limit * 12.0
+
+        month_txs = all_user_txs.filter(
+            is_debit=True,
+            date__gte=start_of_month,
+            date__lte=end_of_month,
+        )
+        month_label = f"All Months ({target_year})"
+        month_key = f"{target_year}-all"
+    else:
+        is_current_month = (target_year == today.year and target_month == today.month)
+        start_of_month = date(target_year, target_month, 1)
+        _, days_in_month = calendar.monthrange(target_year, target_month)
+        end_of_month = date(target_year, target_month, days_in_month)
+        effective_budget_limit = monthly_budget_limit
+
+        # Days passed / remaining
+        if is_current_month:
+            effective_end = today
+            days_passed = max(1, today.day)
+            days_remaining = max(0, days_in_month - today.day)
+        elif date(target_year, target_month, 1) > today:
+            effective_end = end_of_month
+            days_passed = 0
+            days_remaining = days_in_month
+        else:
+            effective_end = end_of_month
+            days_passed = days_in_month
+            days_remaining = 0
+
+        month_txs = all_user_txs.filter(
+            is_debit=True,
+            date__gte=start_of_month,
+            date__lte=effective_end,
+        )
+        month_name = calendar.month_name[target_month]
+        month_label = f"{month_name} {target_year}"
+        month_key = f"{target_year:04d}-{target_month:02d}"
 
     total_spent_month = float(month_txs.aggregate(s=Sum('amount'))['s'] or 0.0)
-    remaining_budget = max(0.0, monthly_budget_limit - total_spent_month)
-    percent_budget_used = round((total_spent_month / monthly_budget_limit * 100), 1) if monthly_budget_limit > 0 else 0.0
+    remaining_budget = max(0.0, effective_budget_limit - total_spent_month)
+    percent_budget_used = round((total_spent_month / effective_budget_limit * 100), 1) if effective_budget_limit > 0 else 0.0
 
     daily_burn_rate_month = round(total_spent_month / max(1, days_passed), 2)
     daily_budget_allowance = round(remaining_budget / max(1, days_remaining), 2) if days_remaining > 0 else 0.0
@@ -242,23 +271,25 @@ def get_category_breakdown_for_month(
             'message': f"You have spent {percent_budget_used}% of your total semester budget (₹{total_spent_month:,.2f} / ₹{monthly_budget_limit:,.2f}) with {days_remaining} days left in the month.",
         })
 
-    month_name = calendar.month_name[target_month]
-    month_label = f"{month_name} {target_year}"
-    month_key = f"{target_year:04d}-{target_month:02d}"
+    if not is_all_months:
+        month_name = calendar.month_name[target_month]
+        month_label = f"{month_name} {target_year}"
+        month_key = f"{target_year:04d}-{target_month:02d}"
 
     available_months = get_available_months_for_user(user)
 
     return {
         'year': target_year,
-        'month': target_month,
+        'month': 'all' if is_all_months else target_month,
         'month_key': month_key,
         'month_label': month_label,
         'is_current_month': is_current_month,
+        'is_all_months': is_all_months,
         'total_spent_month': total_spent_month,
         'transaction_count': month_txs.count(),
         'category_breakdown': category_breakdown,
         'budget': {
-            'monthly_limit': monthly_budget_limit,
+            'monthly_limit': effective_budget_limit,
             'monthly_income': monthly_income,
             'total_spent_month': total_spent_month,
             'remaining_budget': remaining_budget,

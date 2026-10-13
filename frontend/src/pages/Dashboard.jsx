@@ -23,6 +23,10 @@ import './Dashboard.css';
 
 const formatMonthLabel = (mKey) => {
   if (!mKey) return '';
+  if (mKey === 'all' || mKey.endsWith('-all')) {
+    const yearStr = mKey.includes('-') ? mKey.split('-')[0] : '';
+    return yearStr ? `All Months (${yearStr})` : 'All Months (Overall)';
+  }
   const [yearStr, monthStr] = mKey.split('-');
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -95,11 +99,19 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
     setSelectedMonthKey(mKey);
     setIsMonthLoading(true);
     try {
-      const [y, m] = mKey.split('-');
-      const breakdown = await dashboardService.getCategoryBreakdown({
-        month: parseInt(m, 10),
-        year: parseInt(y, 10),
-      });
+      let params = {};
+      if (mKey === 'all') {
+        params = { month: 'all' };
+      } else if (mKey.endsWith('-all')) {
+        params = { month: 'all', year: parseInt(mKey.split('-')[0], 10) };
+      } else {
+        const [y, m] = mKey.split('-');
+        params = {
+          month: parseInt(m, 10),
+          year: parseInt(y, 10),
+        };
+      }
+      const breakdown = await dashboardService.getCategoryBreakdown(params);
       setMonthBreakdownData(breakdown);
       if (breakdown.available_months && breakdown.available_months.length) {
         setAvailableMonths(breakdown.available_months);
@@ -189,19 +201,37 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   const activeMonthBudgetLimit = activeMonthBudget.monthly_limit || monthlyLimit;
   const activeMonthPercentUsed = activeMonthBudget.percent_used || (activeMonthBudgetLimit > 0 ? Math.round((activeMonthSpent / activeMonthBudgetLimit) * 100) : 0);
 
+  // Group available months by year
+  const monthsByYear = availableMonths.reduce((acc, mKey) => {
+    if (mKey.includes('-') && !mKey.endsWith('-all')) {
+      const [yr] = mKey.split('-');
+      if (!acc[yr]) acc[yr] = [];
+      acc[yr].push(mKey);
+    }
+    return acc;
+  }, {});
+
   // Stepper boundary checks
   const currentIndex = availableMonths.indexOf(selectedMonthKey);
-  const isPrevDisabled = currentIndex <= 0;
-  const isNextDisabled = currentIndex === -1 || currentIndex >= availableMonths.length - 1;
+  const isPrevDisabled = currentIndex <= 0 && selectedMonthKey !== 'all' && !selectedMonthKey.endsWith('-all');
+  const isNextDisabled = (currentIndex === -1 || currentIndex >= availableMonths.length - 1) && selectedMonthKey !== 'all' && !selectedMonthKey.endsWith('-all');
 
   const handlePrevMonth = () => {
-    if (!isPrevDisabled && currentIndex > 0) {
+    if (selectedMonthKey === 'all' || selectedMonthKey.endsWith('-all')) {
+      handleSelectMonth(currentMonthKey);
+      return;
+    }
+    if (currentIndex > 0) {
       handleSelectMonth(availableMonths[currentIndex - 1]);
     }
   };
 
   const handleNextMonth = () => {
-    if (!isNextDisabled && currentIndex < availableMonths.length - 1) {
+    if (selectedMonthKey === 'all' || selectedMonthKey.endsWith('-all')) {
+      handleSelectMonth(currentMonthKey);
+      return;
+    }
+    if (currentIndex >= 0 && currentIndex < availableMonths.length - 1) {
       handleSelectMonth(availableMonths[currentIndex + 1]);
     }
   };
@@ -506,15 +536,33 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
                   disabled={isMonthLoading}
                   aria-label="Select spending month"
                 >
-                  {availableMonths.map((mKey) => (
-                    <option key={mKey} value={mKey}>
-                      {formatMonthLabel(mKey)} {mKey === currentMonthKey ? '• Current' : ''}
+                  <optgroup label="Summary Views">
+                    <option value={`${todayDate.getFullYear()}-all`}>
+                      All Months ({todayDate.getFullYear()})
                     </option>
-                  ))}
+                    <option value="all">All Months (Overall)</option>
+                  </optgroup>
+                  {Object.keys(monthsByYear)
+                    .sort((a, b) => b - a)
+                    .map((yr) => (
+                      <optgroup key={yr} label={`Year ${yr}`}>
+                        {monthsByYear[yr].map((mKey) => (
+                          <option key={mKey} value={mKey}>
+                            {formatMonthLabel(mKey)} {mKey === currentMonthKey ? '• Current' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                 </select>
-                <span className={`month-badge-pill ${isSelectedMonthCurrent ? 'badge-current' : 'badge-past'}`}>
-                  {isSelectedMonthCurrent ? 'Current Month' : 'Past Month'}
-                </span>
+                {selectedMonthKey === 'all' || selectedMonthKey.endsWith('-all') ? (
+                  <span className="month-badge-pill badge-all">All Months</span>
+                ) : isSelectedMonthCurrent ? (
+                  <span className="month-badge-pill badge-current">Current Month</span>
+                ) : (
+                  <span className="month-badge-pill badge-past">
+                    {selectedMonthKey > currentMonthKey ? 'Upcoming Month' : 'Past Month'}
+                  </span>
+                )}
               </div>
 
               <button

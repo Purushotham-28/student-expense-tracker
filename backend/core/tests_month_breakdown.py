@@ -156,14 +156,27 @@ class MonthBreakdownTests(TestCase):
 
     def test_available_months_endpoint(self):
         """
-        Available months endpoint returns distinct active transaction months plus current month.
+        Available months endpoint returns all 12 calendar months for the active year.
         """
         response = self.client.get('/api/dashboard/available-months/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         months = response.data['available_months']
-        self.assertIn('2026-09', months)
-        self.assertIn('2026-10', months)
+        # All 12 calendar months for 2026 are included
+        for m in range(1, 13):
+            self.assertIn(f"2026-{m:02d}", months)
 
-        # Ensure deleted-only or future unrecorded months are not in available_months
-        self.assertNotIn('2025-01', months)
+    def test_all_months_aggregate_breakdown(self):
+        """
+        Requesting month='all' aggregates transactions across all months of the year.
+        """
+        response = self.client.get('/api/dashboard/category-breakdown/', {'month': 'all', 'year': 2026})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        data = response.data
+        self.assertEqual(data['month_key'], '2026-all')
+        self.assertTrue(data['is_all_months'])
+        # Sep Food (350) + Sep Travel (150) + Oct Groceries (1200) = 1700.00
+        self.assertEqual(data['total_spent_month'], 1700.00)
+        self.assertEqual(data['transaction_count'], 3)
+
