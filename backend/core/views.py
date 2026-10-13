@@ -886,14 +886,16 @@ from .services.health_score_service import get_user_financial_health_score  # no
 @permission_classes([IsAuthenticated])
 def health_score_view(request):
     """
-    GET /api/planning/health-score
-    Computes a 0-100 financial health score for the current month combining:
+    GET /api/planning/health-score?month=9&year=2026
+    Computes a 0-100 financial health score for the given or current month combining:
       - Savings rate component (up to 40 pts)
       - Budget adherence component (up to 30 pts)
       - Spending volatility component (up to 30 pts)
     Returns the total score, the three sub-scores, metrics breakdown, and 2-3 generated tips.
     """
-    data = get_user_financial_health_score(request.user)
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    data = get_user_financial_health_score(request.user, year=year, month=month)
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -940,23 +942,61 @@ def chat_history_view(request):
     return Response(ChatMessageSerializer(messages, many=True).data, status=status.HTTP_200_OK)
 
 
-# ── Phase 9 — Dashboard Summary & Analytics ─────────────────────────────────
+# ── Phase 9 & Month Breakdown — Dashboard Summary & Analytics ───────────────
 
-from .services.dashboard_service import get_dashboard_summary  # noqa: E402
+from .services.dashboard_service import (  # noqa: E402
+    get_dashboard_summary,
+    get_category_breakdown_for_month,
+    get_available_months_for_user,
+)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_summary_view(request):
     """
-    GET /api/dashboard/summary/
+    GET /api/dashboard/summary/?month=9&year=2026
     Unified demo-ready dashboard summary:
-      - Budget vs actual this month
+      - Budget vs actual for selected or current month
       - Category breakdown & active budget alerts (80% and 100% caps)
       - Runway forecast & burn rate
       - Goals progress & velocity alert
       - Financial Health score card
       - Verification pipeline status & recent transactions
     """
-    data = get_dashboard_summary(request.user)
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    data = get_dashboard_summary(request.user, year=year, month=month)
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def category_breakdown_view(request):
+    """
+    GET /api/dashboard/category-breakdown?month=9&year=2026
+    Returns category spending breakdown, budget adherence, and alert figures
+    scoped to the requested month. Defaults to current month/year when omitted.
+    """
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    data = get_category_breakdown_for_month(request.user, year=year, month=month)
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def available_months_view(request):
+    """
+    GET /api/dashboard/available-months/
+    Returns list of distinct 'YYYY-MM' strings where transactions exist,
+    always including the current month.
+    """
+    months = get_available_months_for_user(request.user)
+    today = timezone.localdate() if hasattr(timezone, 'localdate') else date.today()
+    current_month = f"{today.year:04d}-{today.month:02d}"
+    return Response({
+        'available_months': months,
+        'current_month': current_month,
+    }, status=status.HTTP_200_OK)
+

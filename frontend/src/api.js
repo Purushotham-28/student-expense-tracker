@@ -354,9 +354,14 @@ export const planningService = {
 
   /**
    * Phase 7 — Fetch 0-100 Financial Health Score with sub-score components and tips.
+   * Optionally accepts { month, year }.
    */
-  async getHealthScore() {
-    const response = await api.get('planning/health-score/');
+  async getHealthScore({ month, year } = {}) {
+    const params = new URLSearchParams();
+    if (month) params.append('month', month);
+    if (year) params.append('year', year);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const response = await api.get(`planning/health-score/${qs}`);
     return response.data;
   },
 };
@@ -464,20 +469,46 @@ export const chatService = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Phase 9 — Unified Dashboard Service
+// Phase 9 & Month Selector — Unified Dashboard Service
 // ──────────────────────────────────────────────────────────────────────────────
 export const dashboardService = {
   /**
    * Fetch complete demo-ready dashboard summary:
-   *  - Budget vs actual this month
+   *  - Budget vs actual this month (or specified month/year)
    *  - Category breakdown & budget alerts (80% and 100% caps)
    *  - Runway forecast & daily burn rate
    *  - Goals progress & velocity check
    *  - Financial Health score card
    *  - Recent transactions & verification pipeline
    */
-  async getSummary() {
-    const response = await api.get('dashboard/summary/');
+  async getSummary({ month, year } = {}) {
+    const params = new URLSearchParams();
+    if (month) params.append('month', month);
+    if (year) params.append('year', year);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const response = await api.get(`dashboard/summary/${qs}`);
+    return response.data;
+  },
+
+  /**
+   * Fetch month-scoped category breakdown & budget adherence.
+   * e.g. GET /api/dashboard/category-breakdown?month=9&year=2026
+   */
+  async getCategoryBreakdown({ month, year } = {}) {
+    const params = new URLSearchParams();
+    if (month) params.append('month', month);
+    if (year) params.append('year', year);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const response = await api.get(`dashboard/category-breakdown/${qs}`);
+    return response.data;
+  },
+
+  /**
+   * Fetch available months with actual transactions for the user.
+   * Returns: { available_months: ["2026-07", "2026-08", ...], current_month: "2026-10" }
+   */
+  async getAvailableMonths() {
+    const response = await api.get('dashboard/available-months/');
     return response.data;
   },
 };

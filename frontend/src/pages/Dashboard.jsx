@@ -21,6 +21,18 @@ import AddExpenseModal from '../components/AddExpenseModal';
 import QuickExpenseBar from '../components/QuickExpenseBar';
 import './Dashboard.css';
 
+const formatMonthLabel = (mKey) => {
+  if (!mKey) return '';
+  const [yearStr, monthStr] = mKey.split('-');
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const mIndex = parseInt(monthStr, 10) - 1;
+  const name = monthNames[mIndex] || monthStr;
+  return `${name} ${yearStr}`;
+};
+
 export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   const navigate = useNavigate();
 
@@ -31,12 +43,41 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   const [categoryView, setCategoryView] = useState('pie'); // 'pie' | 'bars'
   const [isAddExpenseModalOpen, setIsAddExpenseModalOpen] = useState(false);
 
+  // Month-wise Breakdown state
+  const [selectedMonthKey, setSelectedMonthKey] = useState('');
+  const [availableMonths, setAvailableMonths] = useState([]);
+  const [monthBreakdownData, setMonthBreakdownData] = useState(null);
+  const [isMonthLoading, setIsMonthLoading] = useState(false);
+
   const fetchDashboardData = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const summary = await dashboardService.getSummary();
       setData(summary);
+
+      const today = new Date();
+      const currKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+      const initialKey = summary.selected_month?.month_key || currKey;
+      setSelectedMonthKey((prev) => prev || initialKey);
+
+      const serverAvailable = summary.available_months || [];
+      const safeAvailable = serverAvailable.includes(initialKey)
+        ? serverAvailable
+        : [...serverAvailable, initialKey].sort();
+      setAvailableMonths(safeAvailable.length ? safeAvailable : [initialKey]);
+
+      setMonthBreakdownData({
+        category_breakdown: summary.category_breakdown || [],
+        budget: summary.budget || {},
+        budget_alerts: summary.budget_alerts || [],
+        total_spent_month: summary.budget?.total_spent_month || 0,
+        transaction_count: (summary.category_breakdown || []).reduce((acc, c) => acc + (c.transaction_count || 0), 0),
+        month_label: summary.selected_month?.month_label || formatMonthLabel(initialKey),
+        month_key: initialKey,
+        is_current_month: summary.selected_month?.is_current_month ?? true,
+        available_months: safeAvailable,
+      });
     } catch (err) {
       console.error('Failed to load dashboard summary:', err);
       setError(err?.response?.data?.error || 'Unable to connect to financial analytics service.');
@@ -48,6 +89,27 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  const handleSelectMonth = async (mKey) => {
+    if (!mKey || mKey === selectedMonthKey) return;
+    setSelectedMonthKey(mKey);
+    setIsMonthLoading(true);
+    try {
+      const [y, m] = mKey.split('-');
+      const breakdown = await dashboardService.getCategoryBreakdown({
+        month: parseInt(m, 10),
+        year: parseInt(y, 10),
+      });
+      setMonthBreakdownData(breakdown);
+      if (breakdown.available_months && breakdown.available_months.length) {
+        setAvailableMonths(breakdown.available_months);
+      }
+    } catch (err) {
+      console.error('Failed to load month category breakdown:', err);
+    } finally {
+      setIsMonthLoading(false);
+    }
+  };
 
   const handleDismissAlert = (alertId) => {
     setDismissedAlerts((prev) => ({ ...prev, [alertId]: true }));
@@ -103,8 +165,49 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
   // Filter out dismissed alerts
   const visibleAlerts = budget_alerts.filter((a) => !dismissedAlerts[a.id]);
 
-  // Pie chart data
-  const pieData = category_breakdown
+  // Active month Breakdown Data
+  const todayDate = new Date();
+  const currentMonthKey = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}`;
+
+  const activeMonthData = monthBreakdownData || {
+    category_breakdown: category_breakdown,
+    budget: budget,
+    budget_alerts: budget_alerts,
+    total_spent_month: spentThisMonth,
+    transaction_count: 0,
+    month_label: data?.selected_month?.month_label || formatMonthLabel(selectedMonthKey || currentMonthKey),
+    month_key: selectedMonthKey || currentMonthKey,
+    is_current_month: true,
+  };
+
+  const activeCategoryBreakdown = activeMonthData.category_breakdown || [];
+  const activeMonthBudget = activeMonthData.budget || {};
+  const activeMonthLabel = activeMonthData.month_label || formatMonthLabel(selectedMonthKey || currentMonthKey);
+  const activeMonthSpent = activeMonthData.total_spent_month ?? (activeMonthBudget.total_spent_month || 0);
+  const activeMonthTxCount = activeMonthData.transaction_count ?? 0;
+  const isSelectedMonthCurrent = activeMonthData.is_current_month ?? (selectedMonthKey === currentMonthKey);
+  const activeMonthBudgetLimit = activeMonthBudget.monthly_limit || monthlyLimit;
+  const activeMonthPercentUsed = activeMonthBudget.percent_used || (activeMonthBudgetLimit > 0 ? Math.round((activeMonthSpent / activeMonthBudgetLimit) * 100) : 0);
+
+  // Stepper boundary checks
+  const currentIndex = availableMonths.indexOf(selectedMonthKey);
+  const isPrevDisabled = currentIndex <= 0;
+  const isNextDisabled = currentIndex === -1 || currentIndex >= availableMonths.length - 1;
+
+  const handlePrevMonth = () => {
+    if (!isPrevDisabled && currentIndex > 0) {
+      handleSelectMonth(availableMonths[currentIndex - 1]);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (!isNextDisabled && currentIndex < availableMonths.length - 1) {
+      handleSelectMonth(availableMonths[currentIndex + 1]);
+    }
+  };
+
+  // Pie chart data scoped to active month
+  const pieData = activeCategoryBreakdown
     .filter((c) => c.spent > 0)
     .map((c) => ({
       name: c.category,
@@ -113,8 +216,8 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
       icon: c.icon,
     }));
 
-  // Bar chart data comparing spent vs budget
-  const barData = category_breakdown.map((c) => ({
+  // Bar chart data comparing spent vs budget for active month
+  const barData = activeCategoryBreakdown.map((c) => ({
     name: c.category.length > 10 ? c.category.slice(0, 9) + '…' : c.category,
     fullName: c.category,
     Spent: c.spent,
@@ -123,7 +226,7 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
     color: c.color,
   }));
 
-  // Clean runway forecast chart points
+  // Clean runway forecast chart points (tied to current month)
   const runwaySeries = (runway.forecast_series || []).slice(0, 30).map((pt, idx) => ({
     day: pt.date ? pt.date.slice(5) : `Day ${idx + 1}`,
     actual: pt.actual_spend !== null && pt.actual_spend !== undefined ? pt.actual_spend : null,
@@ -371,12 +474,62 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
 
       {/* ── Row: Category Breakdown & Spending Distribution ── */}
       <section className="dash-grid-2">
-        {/* Category Breakdown Chart Card */}
+        {/* Category Breakdown Chart Card with Month Selector */}
         <div className="dash-panel" id="category-breakdown-card">
           <div className="panel-header">
             <h3 className="panel-title">
               <span>📊</span> Category Spending Breakdown
             </h3>
+          </div>
+
+          {/* Month Selector Toolbar: Stepper & Dropdown */}
+          <div className="category-panel-toolbar" id="category-month-selector-toolbar">
+            <div className="month-stepper-control" id="month-stepper-control">
+              <button
+                type="button"
+                className="month-stepper-nav-btn"
+                id="btn-prev-month"
+                disabled={isPrevDisabled || isMonthLoading}
+                onClick={handlePrevMonth}
+                title={isPrevDisabled ? "Earliest month with transaction data" : "Navigate to previous month"}
+                aria-label="Previous Month"
+              >
+                ◀
+              </button>
+
+              <div className="month-stepper-label-wrap">
+                <select
+                  id="select-breakdown-month"
+                  className="month-stepper-select"
+                  value={selectedMonthKey}
+                  onChange={(e) => handleSelectMonth(e.target.value)}
+                  disabled={isMonthLoading}
+                  aria-label="Select spending month"
+                >
+                  {availableMonths.map((mKey) => (
+                    <option key={mKey} value={mKey}>
+                      {formatMonthLabel(mKey)} {mKey === currentMonthKey ? '• Current' : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className={`month-badge-pill ${isSelectedMonthCurrent ? 'badge-current' : 'badge-past'}`}>
+                  {isSelectedMonthCurrent ? 'Current Month' : 'Past Month'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                className="month-stepper-nav-btn"
+                id="btn-next-month"
+                disabled={isNextDisabled || isMonthLoading}
+                onClick={handleNextMonth}
+                title={isNextDisabled ? "Latest month with transaction data" : "Navigate to next month"}
+                aria-label="Next Month"
+              >
+                ▶
+              </button>
+            </div>
+
             <div className="segmented-control">
               <button
                 type="button"
@@ -397,13 +550,47 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
             </div>
           </div>
 
-          {pieData.length === 0 ? (
-            <div className="dash-empty-state" style={{ minHeight: 260 }}>
+          {/* Scoped Month Figures: Total Outflow & Budget Consumption */}
+          <div className="month-stats-banner" id="month-stats-banner">
+            <div className="month-stat-item">
+              <span className="month-stat-label">Month Outflow</span>
+              <span className="month-stat-val">₹{activeMonthSpent.toLocaleString()}</span>
+            </div>
+            <div className="month-stat-item">
+              <span className="month-stat-label">Monthly Cap</span>
+              <span className="month-stat-val">₹{Number(activeMonthBudgetLimit).toLocaleString()}</span>
+            </div>
+            <div className="month-stat-item">
+              <span className="month-stat-label">Budget Consumed</span>
+              <span className={`month-stat-val ${activeMonthPercentUsed >= 100 ? 'stat-danger' : activeMonthPercentUsed >= 80 ? 'stat-warning' : 'stat-success'}`}>
+                {activeMonthPercentUsed}%
+              </span>
+            </div>
+            <div className="month-stat-item">
+              <span className="month-stat-label">Transactions</span>
+              <span className="month-stat-val">{activeMonthTxCount}</span>
+            </div>
+          </div>
+
+          {isMonthLoading ? (
+            <div className="month-loading-overlay" id="month-loading-overlay">
+              <div className="month-spinner-mini"></div>
+              <span>Updating {activeMonthLabel} category breakdown...</span>
+            </div>
+          ) : pieData.length === 0 ? (
+            <div className="dash-empty-state" id="category-month-empty-state" style={{ minHeight: 260 }}>
               <span style={{ fontSize: '2.5rem' }}>📭</span>
-              <p style={{ color: 'var(--text-muted)' }}>No categorized transactions logged this month.</p>
-              <Link to="/upload" className="btn-secondary" style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
-                Upload Bank Statement
-              </Link>
+              <h4 style={{ margin: '0.4rem 0 0.2rem', color: '#f8fafc', fontSize: '1.05rem', fontWeight: 700 }}>
+                No transactions recorded for this month
+              </h4>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.86rem', maxWidth: 380, textAlign: 'center', margin: 0 }}>
+                There are no active expenses recorded for {activeMonthLabel}. Pick another month or upload a statement.
+              </p>
+              {isSelectedMonthCurrent && (
+                <Link to="/upload" className="btn-secondary" style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem', marginTop: '0.4rem' }}>
+                  Upload Bank Statement
+                </Link>
+              )}
             </div>
           ) : categoryView === 'pie' ? (
             <div style={{ width: '100%', height: 280 }}>
@@ -465,7 +652,7 @@ export default function Dashboard({ userProfile, onOpenBudgetModal }) {
 
           {/* Category Share List with 80% / 100% threshold indicators */}
           <div className="category-bars-list">
-            {category_breakdown
+            {activeCategoryBreakdown
               .filter((c) => c.spent > 0 || c.budget > 0)
               .slice(0, 4)
               .map((c) => (

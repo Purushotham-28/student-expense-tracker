@@ -29,6 +29,8 @@ from .views import (
     chat_view,
     chat_history_view,
     dashboard_summary_view,
+    category_breakdown_view,
+    available_months_view,
 )
 
 urlpatterns = [
@@ -42,8 +44,10 @@ urlpatterns = [
     # Profile
     re_path(r'^profile/?$', user_profile_view, name='user_profile'),
 
-    # Phase 9 — Dashboard Summary
+    # Phase 9 & Month Selector — Dashboard & Category Breakdown
     re_path(r'^dashboard/summary/?$', dashboard_summary_view, name='dashboard_summary'),
+    re_path(r'^dashboard/category-breakdown/?$', category_breakdown_view, name='dashboard_category_breakdown'),
+    re_path(r'^dashboard/available-months/?$', available_months_view, name='dashboard_available_months'),
 
     # Statements
     re_path(r'^statements/upload/?$', upload_statement, name='statement_upload'),

@@ -237,27 +237,59 @@ def _generate_health_tips(
     return unique_tips[:3]
 
 
-def get_user_financial_health_score(user: User) -> Dict[str, Any]:
+def get_user_financial_health_score(
+    user: User,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    Computes Financial Health Score for a registered User using their current month's
-    spending, income, profile budget limit, and 4-week expenditure distribution.
+    Computes Financial Health Score for a registered User using their specified month's
+    (or current month's) spending, income, profile budget limit, and 4-week expenditure distribution.
     """
+    import calendar
     profile = getattr(user, "profile", None)
     today = date.today()
 
-    # 1. Monthly Income
-    # Prefer actual credit transactions over last 30 days, or profile income
-    cutoff_30d = today - timedelta(days=30)
+    target_year = today.year
+    target_month = today.month
+
+    if year is not None:
+        try:
+            y = int(year)
+            if 2000 <= y <= 2100:
+                target_year = y
+        except (ValueError, TypeError):
+            pass
+
+    if month is not None:
+        try:
+            m = int(month)
+            if 1 <= m <= 12:
+                target_month = m
+        except (ValueError, TypeError):
+            pass
+
+    is_current = (target_year == today.year and target_month == today.month)
+    start_of_month = date(target_year, target_month, 1)
+    _, days_in_month = calendar.monthrange(target_year, target_month)
+    end_of_month = date(target_year, target_month, days_in_month)
+
+    # 1. Monthly Income (credits in that month, or profile income)
     credits_sum = Transaction.objects.filter(
-        user=user, is_debit=False, is_deleted=False, is_duplicate=False, date__gte=cutoff_30d
+        user=user,
+        is_debit=False,
+        is_deleted=False,
+        is_duplicate=False,
+        date__gte=start_of_month,
+        date__lte=end_of_month,
     ).aggregate(s=Sum("amount"))["s"]
-    credits_30d = float(credits_sum or 0.0)
+    credits_month = float(credits_sum or 0.0)
 
     profile_income = float(profile.monthly_income or 0.0) if profile else 0.0
     profile_budget = float(profile.monthly_budget_limit or 0.0) if profile else 0.0
 
-    if credits_30d > 0.0:
-        income = credits_30d
+    if credits_month > 0.0:
+        income = credits_month
     elif profile_income > 0.0:
         income = profile_income
     elif profile_budget > 0.0:
@@ -269,33 +301,41 @@ def get_user_financial_health_score(user: User) -> Dict[str, Any]:
     budget_limit = profile_budget if profile_budget > 0.0 else income
 
     # 3. Monthly Spend & 4-Week Distribution
-    # Query debits over last 28 days to create 4 equal 7-day weekly buckets
     debits_qs = Transaction.objects.filter(
-        user=user, is_debit=True, is_deleted=False, is_duplicate=False, date__gte=cutoff_30d
+        user=user,
+        is_debit=True,
+        is_deleted=False,
+        is_duplicate=False,
+        date__gte=start_of_month,
+        date__lte=end_of_month,
     )
     total_spend = float(debits_qs.aggregate(s=Sum("amount"))["s"] or 0.0)
 
-    # Split into 4 weekly buckets
+    # Split into 4 weekly buckets (days 1-7, 8-14, 15-21, 22-end)
     weekly_spends = [0.0, 0.0, 0.0, 0.0]
     for tx in debits_qs:
         if tx.date:
-            days_ago = (today - tx.date).days
-            week_idx = min(3, max(0, days_ago // 7))
-            weekly_spends[3 - week_idx] += float(tx.amount or 0.0)
+            day_num = tx.date.day
+            week_idx = min(3, max(0, (day_num - 1) // 7))
+            weekly_spends[week_idx] += float(tx.amount or 0.0)
 
-    # Cold-start fallback if user has no debits yet
+    # Cold-start fallback if user has no debits in this month
     if total_spend == 0.0:
         if profile_budget > 0.0:
-            # Baseline estimation
             simulated_spend = profile_budget * 0.75
             weekly_spends = [simulated_spend / 4.0] * 4
             total_spend = simulated_spend
         else:
             weekly_spends = [0.0, 0.0, 0.0, 0.0]
 
-    return calculate_financial_health_score(
+    res = calculate_financial_health_score(
         income=income,
         spend=total_spend,
         budget_limit=budget_limit,
         weekly_spends=weekly_spends,
     )
+    res["month"] = target_month
+    res["year"] = target_year
+    res["month_label"] = f"{calendar.month_name[target_month]} {target_year}"
+    res["is_current_month"] = is_current
+    return res

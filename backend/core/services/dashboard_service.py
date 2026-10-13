@@ -56,40 +56,103 @@ CATEGORY_METADATA = {
 }
 
 
-def get_dashboard_summary(user: User) -> Dict[str, Any]:
+def get_available_months_for_user(user: User) -> List[str]:
     """
-    Builds the complete dashboard summary payload for a student user.
+    Returns a sorted list of unique months ('YYYY-MM') that have transactions
+    for this user (excluding soft-deleted and duplicates), plus the current month.
     """
+    today = date.today()
+    curr_key = f"{today.year:04d}-{today.month:02d}"
+
+    tx_dates = Transaction.objects.filter(
+        user=user,
+        is_deleted=False,
+        is_duplicate=False,
+        date__isnull=False,
+    ).values_list("date", flat=True)
+
+    month_keys = set()
+    for d in tx_dates:
+        if d:
+            month_keys.add(f"{d.year:04d}-{d.month:02d}")
+
+    # Always ensure current month is selectable
+    month_keys.add(curr_key)
+    return sorted(list(month_keys))
+
+
+def get_category_breakdown_for_month(
+    user: User,
+    year: Any = None,
+    month: Any = None,
+) -> Dict[str, Any]:
+    """
+    Computes category breakdown, budget adherence, and alerts for a given month and year.
+    Defaults to the current month/year if not provided.
+    Filters out soft-deleted and duplicate transactions.
+    """
+    today = date.today()
+
+    target_year = today.year
+    target_month = today.month
+
+    if year is not None:
+        try:
+            y = int(year)
+            if 2000 <= y <= 2100:
+                target_year = y
+        except (ValueError, TypeError):
+            pass
+
+    if month is not None:
+        try:
+            m = int(month)
+            if 1 <= m <= 12:
+                target_month = m
+        except (ValueError, TypeError):
+            pass
+
+    is_current_month = (target_year == today.year and target_month == today.month)
+    start_of_month = date(target_year, target_month, 1)
+    _, days_in_month = calendar.monthrange(target_year, target_month)
+    end_of_month = date(target_year, target_month, days_in_month)
+
     profile, _ = UserProfile.objects.get_or_create(
         user=user,
         defaults={'college_roll_number': f'ROLL-{user.id}', 'monthly_budget_limit': 15000.0},
     )
+    monthly_budget_limit = float(profile.monthly_budget_limit or 15000.0)
+    monthly_income = float(profile.monthly_income or 0.0)
 
-    today = date.today()
-    start_of_month = date(today.year, today.month, 1)
-    _, days_in_month = calendar.monthrange(today.year, today.month)
-    days_passed = max(1, today.day)
-    days_remaining = max(0, days_in_month - today.day)
+    # Days passed / remaining
+    if is_current_month:
+        effective_end = today
+        days_passed = max(1, today.day)
+        days_remaining = max(0, days_in_month - today.day)
+    elif date(target_year, target_month, 1) > today:
+        effective_end = end_of_month
+        days_passed = 0
+        days_remaining = days_in_month
+    else:
+        effective_end = end_of_month
+        days_passed = days_in_month
+        days_remaining = 0
 
-    # 1. Transactions & Budget vs Actual this month
     all_user_txs = Transaction.objects.filter(user=user, is_deleted=False, is_duplicate=False)
     month_txs = all_user_txs.filter(
         is_debit=True,
         date__gte=start_of_month,
-        date__lte=today,
+        date__lte=effective_end,
     )
-
-    monthly_budget_limit = float(profile.monthly_budget_limit or 15000.0)
-    monthly_income = float(profile.monthly_income or 0.0)
 
     total_spent_month = float(month_txs.aggregate(s=Sum('amount'))['s'] or 0.0)
     remaining_budget = max(0.0, monthly_budget_limit - total_spent_month)
     percent_budget_used = round((total_spent_month / monthly_budget_limit * 100), 1) if monthly_budget_limit > 0 else 0.0
 
-    daily_burn_rate_month = round(total_spent_month / days_passed, 2)
+    daily_burn_rate_month = round(total_spent_month / max(1, days_passed), 2)
     daily_budget_allowance = round(remaining_budget / max(1, days_remaining), 2) if days_remaining > 0 else 0.0
 
-    # 2. Category Breakdown & Budget Alerts
+    # Aggregate by category
     category_totals = {}
     for tx in month_txs:
         cat = tx.category or 'Other'
@@ -98,7 +161,6 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
     category_breakdown = []
     budget_alerts = []
 
-    # Iterate through all known categories
     for cat in CATEGORIES:
         spent = round(category_totals.get(cat, 0.0), 2)
         share_weight = CATEGORY_BENCHMARK_SHARES.get(cat, 0.05)
@@ -110,6 +172,7 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
 
         cat_item = {
             'category': cat,
+            'name': cat,
             'spent': spent,
             'budget': cat_budget,
             'percent_used': share_percent_used,
@@ -118,10 +181,10 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
             'color': meta['color'],
             'is_warning_80': share_percent_used >= 80.0,
             'is_exceeded_100': share_percent_used >= 100.0,
+            'transaction_count': month_txs.filter(category=cat).count(),
         }
         category_breakdown.append(cat_item)
 
-        # Budget Alert generation (crosses 80% or 100% of category share)
         if spent > 0:
             if share_percent_used >= 100.0:
                 budget_alerts.append({
@@ -150,10 +213,8 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
                     'message': f"You have reached {share_percent_used}% of your monthly {cat} budget (₹{spent:,.2f} of ₹{cat_budget:,.2f}). Consider slowing down.",
                 })
 
-    # Sort categories by spent descending
     category_breakdown.sort(key=lambda x: x['spent'], reverse=True)
 
-    # 3. Overall Monthly Budget Alert if overall budget crossed 80% or 100%
     if percent_budget_used >= 100.0:
         budget_alerts.insert(0, {
             'id': 'alert-overall-exceeded',
@@ -180,6 +241,61 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
             'title': 'Overall Budget Warning (80%+ Consumed)',
             'message': f"You have spent {percent_budget_used}% of your total semester budget (₹{total_spent_month:,.2f} / ₹{monthly_budget_limit:,.2f}) with {days_remaining} days left in the month.",
         })
+
+    month_name = calendar.month_name[target_month]
+    month_label = f"{month_name} {target_year}"
+    month_key = f"{target_year:04d}-{target_month:02d}"
+
+    available_months = get_available_months_for_user(user)
+
+    return {
+        'year': target_year,
+        'month': target_month,
+        'month_key': month_key,
+        'month_label': month_label,
+        'is_current_month': is_current_month,
+        'total_spent_month': total_spent_month,
+        'transaction_count': month_txs.count(),
+        'category_breakdown': category_breakdown,
+        'budget': {
+            'monthly_limit': monthly_budget_limit,
+            'monthly_income': monthly_income,
+            'total_spent_month': total_spent_month,
+            'remaining_budget': remaining_budget,
+            'percent_used': percent_budget_used,
+            'days_in_month': days_in_month,
+            'days_passed': days_passed,
+            'days_remaining': days_remaining,
+            'daily_burn_rate': daily_burn_rate_month,
+            'daily_allowance_remaining': daily_budget_allowance,
+        },
+        'budget_alerts': budget_alerts,
+        'available_months': available_months,
+    }
+
+
+def get_dashboard_summary(
+    user: User,
+    year: Any = None,
+    month: Any = None,
+) -> Dict[str, Any]:
+    """
+    Builds the complete dashboard summary payload for a student user.
+    Category breakdown and monthly budget metrics respect optional year/month.
+    Runway forecast and goals remain forward-looking (tied to current status).
+    """
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'college_roll_number': f'ROLL-{user.id}', 'monthly_budget_limit': 15000.0},
+    )
+
+    today = date.today()
+    breakdown_data = get_category_breakdown_for_month(user, year=year, month=month)
+
+    monthly_budget_limit = breakdown_data['budget']['monthly_limit']
+    monthly_income = breakdown_data['budget']['monthly_income']
+    daily_burn_rate_month = breakdown_data['budget']['daily_burn_rate']
+    all_user_txs = Transaction.objects.filter(user=user, is_deleted=False, is_duplicate=False)
 
     # 4. Runway Summary
     try:
@@ -221,7 +337,7 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
 
     # 6. Financial Health Score Summary
     try:
-        health_info = get_user_financial_health_score(user)
+        health_info = get_user_financial_health_score(user, year=breakdown_data['year'], month=breakdown_data['month'])
     except Exception as e:
         health_info = {
             'health_score': 75,
@@ -265,20 +381,17 @@ def get_dashboard_summary(user: User) -> Dict[str, Any]:
             'monthly_income': monthly_income,
             'is_onboarded': bool(profile.monthly_budget_limit and profile.monthly_budget_limit > 0),
         },
-        'budget': {
-            'monthly_limit': monthly_budget_limit,
-            'monthly_income': monthly_income,
-            'total_spent_month': total_spent_month,
-            'remaining_budget': remaining_budget,
-            'percent_used': percent_budget_used,
-            'days_in_month': days_in_month,
-            'days_passed': days_passed,
-            'days_remaining': days_remaining,
-            'daily_burn_rate': daily_burn_rate_month,
-            'daily_allowance_remaining': daily_budget_allowance,
+        'budget': breakdown_data['budget'],
+        'category_breakdown': breakdown_data['category_breakdown'],
+        'budget_alerts': breakdown_data['budget_alerts'],
+        'selected_month': {
+            'year': breakdown_data['year'],
+            'month': breakdown_data['month'],
+            'month_key': breakdown_data['month_key'],
+            'month_label': breakdown_data['month_label'],
+            'is_current_month': breakdown_data['is_current_month'],
         },
-        'category_breakdown': category_breakdown,
-        'budget_alerts': budget_alerts,
+        'available_months': breakdown_data['available_months'],
         'runway': {
             'runway_date': runway_info.get('runway_date'),
             'runway_days': runway_info.get('runway_days'),
