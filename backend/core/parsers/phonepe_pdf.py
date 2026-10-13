@@ -53,10 +53,12 @@ class PhonePePdfParser(BaseStatementParser):
                 if not pdf.pages:
                     return False
                 first_text = (pdf.pages[0].extract_text() or "").lower()
+                if "slice small finance bank" in first_text or "slice.bank.in" in first_text:
+                    return False
                 return (
-                    "phonepe" in first_text
-                    or "support.phonepe.com" in first_text
-                    or ("transaction statement for" in first_text and "utr no." in first_text)
+                    "support.phonepe.com" in first_text
+                    or ("phonepe" in first_text and "transaction statement for" in first_text)
+                    or ("phonepe" in first_text and "utr no." in first_text and "paid to" in first_text)
                 )
         except Exception as e:
             logger.debug("PhonePe can_parse check failed: %s", e)

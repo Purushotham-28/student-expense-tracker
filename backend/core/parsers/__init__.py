@@ -19,6 +19,7 @@ from .exceptions import (
 
 # Import parsers in priority order
 from . import phonepe_pdf       # noqa: F401  — registers PhonePePdfParser
+from . import slice_pdf         # noqa: F401  — registers SlicePdfParser
 from . import hdfc_pdf          # noqa: F401  — registers HdfcPdfParser
 from . import sbi_csv           # noqa: F401  — registers SbiCsvParser
 from . import generic_csv       # noqa: F401  — registers GenericCsvParser
